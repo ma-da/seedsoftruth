@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#020617" />
+  <title>Seeds of Truth AI</title>
+
+  <!-- External CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=4">
+
+</head>
+
+<body class="light">
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+      <div class="sidebar-header">
+        <!-- Collapse (desktop) -->
+        <button
+          type="button"
+          class="sidebar-collapse-btn has-tooltip"
+          id="sidebar-collapse-btn"
+          aria-label="Collapse sidebar"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+
+        <!-- Brand -->
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6">
+              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="24">🌱</text>
+            </svg>
+          </div>
+          <div>
+            <button type="button" class="brand-title brand-title-btn" id="about-btn">
+              Seeds of Truth
+            </button>
+            <div class="brand-subtitle">Open Testing Chat</div>
+          </div>
+        </div>
+
+        <!-- Theme toggle -->
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
+          <!-- sun (dark mode) -->
+          <svg class="theme-icon sun" viewBox="0 0 24 24" stroke="#f1f1f1" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M12 3v2.25M18.364 5.636l-1.59 1.59M21 12h-2.25M18.364 18.364l-1.59-1.59M12 18.75V21M7.227 16.773l-1.59 1.59M5.25 12H3M7.227 7.227 5.636 5.636" />
+            <circle cx="12" cy="12" r="4" />
+          </svg>
+          <!-- moon (light mode) -->
+          <svg class="theme-icon moon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-scroll">
+        <!-- Status -->
+        <div>
+          <div class="sidebar-section-title">Status: Not connected yet</div>
+
+          <div class="status-panel">
+            <div class="status-row">
+              <div class="status-left">
+                <span class="status-dot" id="endpoint-dot" aria-hidden="true"></span>
+                <span class="status-label" id="endpoint-label">Checking endpoint...</span>
+              </div>
+              <span class="status-chip" id="endpoint-chip">unknown</span>
+            </div>
+
+            <div class="status-queue" id="queue-line">
+              There are <b id="queue-count">0</b> queries in line.
+              Estimated wait time is <b id="queue-eta">0s</b>.
+            </div>
+
+            <div class="status-messages">
+              <div class="status-messages-title">Updates</div>
+              <div class="status-messages-list" id="status-messages">
+                <div class="status-message muted">No status messages yet.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+		<!-- Ping test -->
+		
+		<pre id="ping-result"></pre>
+
+        <!-- Recent -->
+        <div class="sidebar-section-title">Recent</div>
+        <div id="recent-list">
+          <div class="recent-item muted">No saved conversations yet.</div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <div class="sidebar-avatar" aria-hidden="true">S</div>
+          <div>
+            <div class="sidebar-user-name">Seeds of Truth</div>
+            <div class="sidebar-user-sub">
+              Developed by
+              <a href="https://www.peerservice.org/donations" target="_blank" rel="noopener noreferrer">PEERS</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="main">
+      <!-- Mobile header -->
+      <div class="mobile-header">
+        <button class="mobile-menu-btn" id="menu-btn" aria-label="Toggle sidebar">
+          <svg width="22" height="22" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" aria-hidden="true">
+            <path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <div class="mobile-title">Seeds of Truth AI</div>
+
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
+          <svg class="theme-icon sun" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M12 3v2.25M18.364 5.636l-1.59 1.59M21 12h-2.25M18.364 18.364l-1.59-1.59M12 18.75V21M7.227 16.773l-1.59 1.59M5.25 12H3M7.227 7.227 5.636 5.636" />
+            <circle cx="12" cy="12" r="4" />
+          </svg>
+          <svg class="theme-icon moon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Chat -->
+      <div class="chat-wrapper" id="chat-container">
+        <div class="chat-inner">
+          <div class="welcome" id="welcome-message">
+            <div class="welcome-icon" aria-hidden="true">
+              <svg width="48" height="48" viewBox="0 0 24 24">
+                <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="24">🌱</text>
+              </svg>
+            </div>
+
+            <div class="welcome-title">Seeds of Truth</div>
+
+            <div class="welcome-sub">
+              Google search is censored. So is social media. Most popular AIs are censored too. Seeds of Truth is an uncensored AI trained on millions of suppressed documents. References provided.
+            </div>
+          </div>
+
+          <div class="messages" id="messages" aria-live="polite"></div>
+        </div>
+      </div>
+
+		<!-- Input -->
+		<div class="input-wrapper">
+		  <div class="input-inner">
+			<div class="input-row">
+			  <!-- Textarea + Send -->
+			  <div class="input-area-wrap">
+			      <button type="button" class="tools-button tools-button--inset" id="tools-btn" aria-label="Tools">
+					<span class="tools-plus">+</span>
+				  </button>
+				<form id="chat-form" autocomplete="off">
+				  <textarea
+					id="chat-input"
+					class="chat-input"
+					rows="1"
+					placeholder="Ask Seeds of Truth AI..."
+				  ></textarea>
+
+				  <button type="submit" class="send-button" id="send-btn" aria-label="Send">
+					➔
+				  </button>
+				</form>
+
+				<!-- Tools popup -->
+				<div class="tools-popup" id="tools-popup" aria-label="Tools panel" role="dialog" aria-modal="false">
+				  <!-- MODE -->
+				  <div class="tools-section">
+					<div class="tools-section-title">Mode</div>
+
+					<div class="segmented" role="radiogroup" aria-label="Mode selection">
+					  <input type="radio" id="mode-search" name="mode" value="search" />
+					  <label for="mode-search">Search</label>
+
+					  <input type="radio" id="mode-chat" name="mode" value="chat" checked />
+					  <label for="mode-chat">AI chat</label>
+
+					  <input type="radio" id="mode-ab" name="mode" value="ab" />
+					  <label for="mode-ab">A/B test</label>
+					</div>
+
+					<div class="tools-help" id="mode-help">AI chat: normal single-model response.</div>
+				  </div>
+
+				  <div class="tools-divider" aria-hidden="true"></div>
+
+				  <!-- MEMORY -->
+				  <div class="tools-section">
+					<div class="tools-section-title">Memory</div>
+
+					<label class="tools-label" for="history-slider">
+					  Previous questions remembered
+					  <span class="tools-value" id="history-value">2</span>
+					</label>
+
+					<input
+					  id="history-slider"
+					  class="tools-range"
+					  type="range"
+					  min="0"
+					  max="5"
+					  step="1"
+					  value="2"
+					/>
+
+					<div class="tools-help">
+					  Includes up to <b id="history-help-n">2</b> previous Q/A turns in the next request.
+					</div>
+				  </div>
+				</div>
+			  </div>
+			</div>
+
+			<!-- Input note + actions -->
+			<div class="input-note">
+
+			  <span class="note-text">
+				Seeds of Truth AI can make mistakes. Please verify important information.
+			  </span>
+
+			  <span class="note-actions">
+				<!-- Save -->
+				<button
+				  type="button"
+				  class="icon-btn icon-btn--ghost has-tooltip"
+				  id="save-convo-btn"
+				  data-tooltip="Save conversation"
+				  aria-label="Save conversation"
+				>
+				  <svg
+					class="save-icon"
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2.4"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+				  >
+					<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+					<path d="M17 21v-8H7v8" />
+					<path d="M7 3v5h8" />
+				  </svg>
+				</button>
+
+				<!-- Trash -->
+				<button
+				  type="button"
+				  class="icon-btn icon-btn--danger has-tooltip"
+				  id="trash-chat-btn"
+				  data-tooltip="Clear current chat"
+				  aria-label="Clear current chat"
+				>
+				  <svg
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2.2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+				  >
+					<path d="M3 6h18" />
+					<path d="M8 6V4h8v2" />
+					<path d="M6 6l1 16h10l1-16" />
+					<path d="M10 11v6" />
+					<path d="M14 11v6" />
+				  </svg>
+				</button>
+			  </span>
+			</div>
+		  </div>
+		</div>
+
+
+      <!-- References -->
+      <section class="references-wrapper" id="references-wrapper" aria-label="References">
+        <div class="references-inner">
+          <div class="references-header">
+            <div class="references-title" id="references-title">References</div>
+            <div class="references-count" id="references-count">0 items</div>
+          </div>
+
+          <div class="references-grid" id="references-container"></div>
+
+          <div class="references-empty" id="references-empty">
+            When available, up to 10 reference cards related to the latest answer will appear here.
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Mobile overlay -->
+  <div class="overlay" id="overlay"></div>
+
+  <!-- Modal (confirm/alert) -->
+  <div class="modal-overlay" id="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-message">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title">Confirm</div>
+        <button type="button" class="modal-close" id="modal-close" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-message" id="modal-message"></div>
+
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- Feedback Modal -->
+  <div class="fb-overlay" id="fb-overlay" aria-hidden="true">
+    <div class="fb-modal" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+      <div class="fb-header">
+        <div class="fb-title" id="fb-title">Add feedback</div>
+        <button type="button" class="fb-close has-tooltip" id="fb-close" data-tooltip="Close" aria-label="Close">×</button>
+      </div>
+
+      <div class="fb-body">
+        <div class="fb-meta" id="fb-meta"></div>
+
+        <div class="fb-grid">
+          <label class="fb-field" id="fb-field-accuracy">
+            <span>Accuracy (1–10)</span>
+            <input id="fb-accuracy" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+
+          <label class="fb-field" id="fb-field-style">
+            <span>Style (1–10)</span>
+            <input id="fb-style" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+
+          <label class="fb-field" id="fb-field-relevance">
+            <span>Relevance (1–10)</span>
+            <input id="fb-relevance" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+        </div>
+
+        <label class="fb-field fb-field-full">
+          <span>Comments</span>
+          <textarea id="fb-comments" rows="4" placeholder="What should we improve? What worked well?"></textarea>
+        </label>
+      </div>
+
+      <div class="fb-actions">
+        <button type="button" class="fb-btn" id="fb-cancel">Cancel</button>
+        <button type="button" class="fb-btn primary" id="fb-submit">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Thanks Toast -->
+  <div class="fb-toast" id="fb-toast" aria-hidden="true">
+    <span class="fb-check" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6L9 17l-5-5" />
+      </svg>
+    </span>
+    <span>Thanks for contributing!</span>
+  </div>
+
+  <!-- Sidebar open button (when collapsed) -->
+  <button
+    type="button"
+    class="sidebar-open-btn has-tooltip"
+    id="sidebar-open-btn"
+    aria-label="Open sidebar"
+  >
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  </button>
+
+	<button id="lock-btn" class="lock-btn" type="button" aria-label="Unlock">
+	  <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+		   stroke="currentColor" stroke-width="2.2"
+		   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<rect x="3" y="11" width="18" height="11" rx="2"></rect>
+		<path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+	  </svg>
+	</button>
+
+	<div id="lock-modal" class="lock-modal" aria-hidden="true">
+	  <div class="lock-card" role="dialog" aria-modal="true" aria-label="Password">
+		<button id="lock-close" class="lock-close" type="button" aria-label="Close">×</button>
+
+		<label class="lock-label" for="lock-pass">Password:</label>
+
+		<div class="lock-row">
+		  <input id="lock-pass" class="lock-input" type="password" autocomplete="current-password" />
+		  <button id="lock-enter" class="lock-enter" type="button">Enter</button>
+		</div>
+
+		<div id="lock-msg" class="lock-msg" aria-live="polite"></div>
+	  </div>
+	</div>
+	<!-- Click distortion layer -->
+	<div id="click-distort" aria-hidden="true"></div>
+
+	<!-- SVG filter used by the distortion "lens" -->
+	<svg width="0" height="0" style="position:absolute">
+	  <filter id="sot-displace">
+		<!-- Animated via JS -->
+		<feTurbulence
+		  type="fractalNoise"
+		  baseFrequency="0.012"
+		  numOctaves="1"
+		  seed="2"
+		  result="noise"
+		/>
+		<feDisplacementMap
+		  in="SourceGraphic"
+		  in2="noise"
+		  scale="0"
+		  xChannelSelector="R"
+		  yChannelSelector="G"
+		/>
+	  </filter>
+	</svg>
+
+
+  <!-- External JS -->
+  <script src="{{ url_for('static', filename='app.js') }}?v=2" defer></script>
+
+</body>
+</html>
