@@ -1,6 +1,7 @@
-venv/
-.env
+db
+test.log
+cookies.txt
+.*.swp
+.idea/
 __pycache__/
-*.pyc
-*.swp
-.idea
+

@@ -40,6 +40,9 @@ from flask import Flask, render_template, request, jsonify, session
 import traceback
 import inspect
 
+import db
+
+
 # ------------------ Logging ------------------
 
 def _setup_logger() -> logging.Logger:
@@ -160,6 +163,7 @@ def ensure_state() -> bool:
 # Eager init once at import time (fine under systemd + gunicorn).
 # If this fails (network down, etc.), ensure_state() will keep retrying on requests.
 init_state(force=False)
+db.init_db()
 
 # ------------------ Async bridge helpers ------------------
 
@@ -479,6 +483,7 @@ def on_chat():
 
     try:
         answer, docs = chat_with_corpus(msg, top_k=10)
+
     except RuntimeError as e:
         return jsonify({
             "ok": False,
