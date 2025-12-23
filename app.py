@@ -163,7 +163,9 @@ def ensure_state() -> bool:
 # Eager init once at import time (fine under systemd + gunicorn).
 # If this fails (network down, etc.), ensure_state() will keep retrying on requests.
 init_state(force=False)
-db.init_db()
+
+# Commenting this out until we have need of it
+#db.init_db()
 
 # ------------------ Async bridge helpers ------------------
 
