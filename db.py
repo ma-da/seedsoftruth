@@ -18,15 +18,27 @@ from pathlib import Path
 
 DB_PATH = Path("db/app.db")
 
+import sqlite3
+import logging
+import time
+
 def init_db():
-    # 1. Ensure parent directory exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    # 2. Opening the file creates the DB if missing
-    conn = sqlite3.connect(DB_PATH)
+    # Use a generous timeout to tolerate concurrent startup
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+        isolation_level=None  # autocommit mode
+    )
 
     try:
-        # 3. Initialize schema
+        # Harden SQLite behavior
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA busy_timeout=30000;")
+
+        # Schema initialization (atomic)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
@@ -49,10 +61,14 @@ def init_db():
         ON jobs(user_id, created_at);
         """)
 
-        conn.commit()
+        logging.info("Database initialized successfully")
+
+    except sqlite3.Error as e:
+        logging.exception("Database initialization failed")
+        raise  # fail fast — this is a fatal startup error
+
     finally:
         conn.close()
-    logging.info(f"init_db complete with path {DB_PATH}")
 
 def get_conn():
     conn = sqlite3.connect(
