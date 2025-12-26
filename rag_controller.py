@@ -14,8 +14,10 @@ composable, and much easier to reason about.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import asyncio
 import json
+import queue
 import re
 import time
 from dataclasses import dataclass
@@ -25,6 +27,8 @@ import os
 import numpy as np
 import requests
 from collections import Counter
+
+import logging_config
 
 # ------------------ CONFIG ------------------
 HIVE_RPC = "https://api.hive.blog"
@@ -61,6 +65,8 @@ _TOKEN_RE = re.compile(r"[a-z0-9']+")
 # retain shards for added speed
 _SHARD_CACHE: Dict[str, Any] = {}
 
+rag_logger = logging_config.get_logger("rag")
+
 # ================== STATE ==================
 @dataclass
 class RetrievalState:
@@ -72,6 +78,20 @@ class RetrievalState:
     group_list: List[str]
     groups_url_map: Dict[str, str]
 
+
+@dataclass
+class QueuedJob:
+    user_id: str
+    job_id: str
+    prompt: str
+
+
+@dataclass
+class QueuedResponse:
+    user_id: str
+    prompt: str
+    reply: str
+    references: str
 
 # ================== BOOT ==================
 
@@ -92,19 +112,20 @@ def hive_get_content(author: str, permlink: str) -> Dict[str, Any]:
 
 def boot() -> RetrievalState:
     """Download registry + artifacts and build immutable retrieval state."""
-    print("Booting retrieval system…")
+    rag_logger.info("Booting retrieval system…")
 
     if USE_HARDCODED_REGISTRY:
         registry = HARDCODED_REGISTRY
     else:
         post = hive_get_content(AUTHOR, PERMLINK)
+        # TODO: Fix this. parse_registry_from_post() is not defined in project.
         registry = parse_registry_from_post(post)
 
     manifest = requests.get(registry["betaslim_manifest.byfile.json"]["url_custom"]).json()
-    print("Boot: got manifest")
+    rag_logger.info("Boot: got manifest")
     
     groups_url_map = requests.get(registry["groups_urls.json"]["url_custom"]).json()
-    print("Boot: got groups_url_map")
+    rag_logger.info("Boot: got groups_url_map")
 
     files = {f["name"]: f for f in manifest.get("files", [])}
 
@@ -115,20 +136,20 @@ def boot() -> RetrievalState:
         return f.get("url_custom") or f.get("url_dedicated")
 
     vocab = requests.get(file_url("vocabulary.json")).json()
-    print("Boot: got vocab")
+    rag_logger.info("Boot: got vocab")
 
     idf = np.array(requests.get(file_url("idf.json")).json(), dtype=np.float32)
     centroids = [np.array(row, dtype=np.float32)
                  for row in requests.get(file_url("centroids.json")).json()]
-    print("Boot: got centroids")
+    rag_logger.info("Boot: got centroids")
 
     stopwords = set(w.lower() for w in requests.get(file_url("stopwords.json")).json())
-    print("Boot: got stopwords")
+    rag_logger.info("Boot: got stopwords")
 
     index_obj = requests.get(
         file_url(manifest.get("roles", {}).get("index", "centroids_index.json"))
     ).json()
-    print("Boot: got roles")
+    rag_logger.info("Boot: got roles")
 
     state = RetrievalState(
         vocab=vocab,
@@ -140,7 +161,7 @@ def boot() -> RetrievalState:
         groups_url_map=groups_url_map,
     )
 
-    print(f"✓ Boot complete: {len(vocab):,} vocab | {len(centroids)} centroids")
+    rag_logger.info(f"✓ Boot complete: {len(vocab):,} vocab | {len(centroids)} centroids")
     return state
 
 
@@ -338,10 +359,102 @@ def build_context(
 # ================== ORCHESTRATION ==================
 
 HF_ENDPOINT_URL = "https://cr41uamktrsdyg3d.us-east-1.aws.endpoints.huggingface.cloud"
+
+# The Huggingface token
+# NOTE DO NOT CHECK IN THE ACTUAL HF TOKEN
 HF_API_KEY = os.getenv("HF_API_KEY", "").strip()
+
 HF_TIMEOUT = int(os.getenv("HF_TIMEOUT_SECS", "900"))
 HF_MAX_ATTEMPTS = int(os.getenv("HF_MAX_ATTEMPTS", "10"))
 HF_MAX_WAIT_SECS = int(os.getenv("HF_MAX_WAIT_SECS", "6"))
+
+# Optional: custom warmup prompt (keeps your esoteric style)
+HF_WARMUP_PROMPT = "Q: [warmup] A:"
+HF_WARMUP_MAX_NEW_TOKENS = 16
+
+# headers sent in endpoint model requests
+HF_REQ_HEADERS = {
+    "Authorization": f"Bearer {HF_API_KEY}",
+    "Content-Type": "application/json",
+}
+
+HF_MAX_ALLOWED_NEW_TOKENS = 1200
+
+# ask message payload
+HF_PAYLOAD = {"inputs": "payload"}
+
+# health check payload
+HF_HEALTH_PAYLOAD = {"inputs": "health_check"}
+
+# poll interval used by background workers
+WORKER_POLL_INTERVAL_SECS = 2
+
+# the number of workers to use in the thread pool.
+# usually this should be set to max of the number of model instance replicas
+MAX_WORKERS = 1
+
+# this queue holds the jobs awaiting to be processed
+job_queue = queue.Queue()
+
+# this queue holds outgoing responses that need to be sent to client
+outgoing_queue = queue.Queue()
+
+HF_REQ_TIMEOUT_SECS = 5
+
+
+async def is_model_ready(timeout=HF_REQ_TIMEOUT_SECS) -> bool:
+    rag_logger.info("checking health...")
+    try:
+        r = requests.post(f"{HF_ENDPOINT_URL}",
+                          headers=HF_REQ_HEADERS,
+                          json=HF_HEALTH_PAYLOAD,
+                          timeout=timeout)
+        if r.status_code == 200:
+            if r.json().get("health") == "ok":
+                rag_logger.info("Model ready: Custom health response received")
+                return True
+            else:
+                rag_logger.info("Processed response but not explicit health OK")
+                return False  # Or False if strict
+        elif r.status_code in (401, 403):
+            rag_logger.error(f"Auth error {r.status_code}: Invalid HF_API_KEY?")
+            return False
+        elif r.status_code == 503:
+            rag_logger.info("503: Model likely still loading (cold start)")
+            return False
+        else:
+            rag_logger.warning(f"Unexpected status: {r.status_code} - {r.text}")
+            return False
+    except requests.Timeout:
+        rag_logger.warning("Health check timed out (model loading?)")
+        return False
+    except Exception as e:
+        rag_logger.warning(f"Health check failed: {e}")
+        return False
+
+async def send_warmup() -> bool:
+    payload = {
+        "inputs": HF_WARMUP_PROMPT,
+        "parameters": {
+            "max_new_tokens": HF_WARMUP_MAX_NEW_TOKENS,
+            "temperature": 0.1,
+            "stop_sequences": ["\n", "Q:"]
+        }
+    }
+    try:
+        r = requests.post(
+            f"{HF_ENDPOINT_URL}/generate",
+            json=payload,
+            headers=HF_REQ_HEADERS,
+            timeout=60
+        )
+        if r.status_code == 200:
+            rag_logger.info(f"Warm-up successful! Response: {r.json().get('generated_text', '')[:100]}")
+            return True
+    except Exception as e:
+        rag_logger.warning(f"Warm-up request failed: {e}")
+
+    return False
 
 def _parse_hf_text(data) -> str:
     """
@@ -372,8 +485,13 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
     """
     Sync HF call with 503 model-loading retry. Raises RuntimeError with details on failure.
     """
-    if not HF_ENDPOINT_URL or not HF_API_KEY:
-        raise RuntimeError("Missing HF_ENDPOINT_URL or HF_API_KEY")
+    if not HF_ENDPOINT_URL:
+        rag_logger.error("Missing HF_ENDPOINT_URL")
+        raise RuntimeError("Missing HF_ENDPOINT_URL")
+
+    if not HF_API_KEY:
+        rag_logger.error("Missing HF_API_KEY")
+        raise RuntimeError("Missing HF_API_KEY")
 
     headers = {
         "Authorization": f"Bearer {HF_API_KEY}",
@@ -423,17 +541,18 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
 
 
 async def ask(state: "RetrievalState", question: str, *, context_k: int = 5, centroid_k: int = 20, verbose: bool = True) -> str:
+    rag_logger.info(f"rag_controller begin question ask, prompt: {question[:40]}...")
     q, truncated = truncate_question(question)
 
     if verbose:
-        print("Searching corpus…")
+        rag_logger.info("Searching corpus…")
     t0 = time.time()
 
     docs = await sparse_retrieve(state, q, centroid_k=centroid_k, max_per_shard=None)
     context = build_context(docs, q, context_k=context_k)
 
     if verbose:
-        print(f"Retrieved context in {time.time() - t0:.2f}s")
+        rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
 
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
@@ -448,6 +567,7 @@ async def ask(state: "RetrievalState", question: str, *, context_k: int = 5, cen
     if truncated:
         answer = "(Question truncated)\n\n" + answer
 
+    rag_logger.info(f"rag_controller finished question ask, answer: {answer[:40]}...")
     return answer.strip()
 
 
@@ -561,6 +681,21 @@ async def search_references(
         "message": f"Found {len(results)} result(s).",
     }
 
+# ================== Queueing ==================
+
+def queue_job(user_id, job_id, msg) -> bool:
+    queued_job = QueuedJob(user_id, job_id, msg)
+
+    try:
+        job_queue.put(queued_job, False)
+        rag_logger.info(f"Job with id {job_id} was queued successfully. Curr depth: {job_queue.qsize()}")
+        return True
+    except queue.Full:
+        rag_logger.error(f"Job queue was full. Msg dropped for user {user_id}.")
+    except Exception as e:
+        rag_logger.error(f"Exception occurred. Msg dropped for user {user_id}. Detail: {e}")
+
+    return False
 
 # ================== MAIN ==================
 
@@ -572,8 +707,8 @@ async def main():
     #    state,
     #    "What really happened on 9/11 according to declassified documents and whistleblowers?",
     #)
-    #print("\nANSWER:\n" + "=" * 40)
-    #print(answer)
+    #rag_logger.info("\nANSWER:\n" + "=" * 40)
+    #rag_logger.info(answer)
 
     # Test search_references method
     refs = await search_references(
@@ -582,7 +717,7 @@ async def main():
         top_k=10,
         verbose=True,
     )
-    print(json.dumps(refs, indent=2, ensure_ascii=False))
+    rag_logger.info(json.dumps(refs, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

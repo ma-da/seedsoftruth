@@ -28,13 +28,15 @@ from __future__ import annotations
 import os
 import hmac
 import time
-import json
 import random
 import threading
 import logging
+import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+import rag_controller
 
+from asgiref.sync import async_to_sync  # pip install asgiref
 from flask import Flask, render_template, request, jsonify, session
 
 import traceback
@@ -56,6 +58,7 @@ def _setup_logger() -> logging.Logger:
         )
         return logging.getLogger("seedsoftruth")
 
+
 app_logger = _setup_logger()
 
 # ------------------ App setup ------------------
@@ -71,20 +74,25 @@ if os.environ.get("TEMPLATES_AUTO_RELOAD", "1") == "1":
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
 
+
 # ------------------ Password gating ------------------
 
 def _parse_passwords(env_value: str) -> List[str]:
     return [p.strip() for p in (env_value or "").split(",") if p.strip()]
 
+
 ALLOWED_PASSWORDS = _parse_passwords(os.environ.get("SOT_PASSWORDS", ""))
+
 
 def _is_unlocked() -> bool:
     return bool(session.get("unlocked", False))
+
 
 def _require_unlocked():
     if not _is_unlocked():
         return jsonify({"ok": False, "error": "locked", "message": "Not today"}), 403
     return None
+
 
 # ------------------ Retrieval state (boot + ensure) ------------------
 
@@ -94,6 +102,7 @@ _last_init_attempt_ts = 0.0
 _last_init_error: Optional[str] = None
 
 INIT_RETRY_COOLDOWN_S = int(os.environ.get("SOT_INIT_RETRY_COOLDOWN_S", "10"))
+
 
 def init_state(force: bool = False) -> bool:
     """
@@ -126,22 +135,7 @@ def init_state(force: bool = False) -> bool:
         app_logger.info("init_state: starting rag_controller.boot()...")
 
         try:
-            import rag_controller  # type: ignore
-        except Exception as e:
-            _last_init_error = f"rag_controller import failed: {e}"
-            app_logger.exception(_last_init_error)
-            retrieval_state = None
-            return False
-
-        try:
-            boot = getattr(rag_controller, "boot", None)
-            if boot is None:
-                _last_init_error = "rag_controller.boot not found"
-                app_logger.error(_last_init_error)
-                retrieval_state = None
-                return False
-
-            retrieval_state = boot()
+            retrieval_state = rag_controller.boot()
             if retrieval_state is None:
                 _last_init_error = "boot() returned None"
                 app_logger.error(_last_init_error)
@@ -156,31 +150,36 @@ def init_state(force: bool = False) -> bool:
             retrieval_state = None
             return False
 
+
 def ensure_state() -> bool:
     """Lazy initializer used by routes. Returns True if ready."""
     return init_state(force=False)
+
 
 # Eager init once at import time (fine under systemd + gunicorn).
 # If this fails (network down, etc.), ensure_state() will keep retrying on requests.
 init_state(force=False)
 db.init_db()
 
+
 # ------------------ Async bridge helpers ------------------
 
-def _async_to_sync(coro_fn):
+def _async_to_sync(async_fn):
     """
     Convert an async function (no args) to sync call.
     Prefers asgiref, which is the most reliable for sync Flask under gunicorn.
     """
     try:
-        from asgiref.sync import async_to_sync  # type: ignore
-        return async_to_sync(coro_fn)
-    except Exception:
+        return async_to_sync(async_fn)
+    except Exception as e:
+        app_logger.error("Exception path in _async_to_sync, details: {e}")
         # fallback: run in a fresh event loop (ok for dev; not ideal at scale)
         import asyncio
         def _runner():
-            return asyncio.run(coro_fn())
+            return asyncio.run(async_fn())
+
         return _runner
+
 
 # ------------------ Shared search/chat functions ------------------
 
@@ -196,6 +195,7 @@ def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
     global retrieval_state
 
     if not ensure_state():
+        app_logger.error("Search system not initialized. Did boot() work?")
         raise RuntimeError(_last_init_error or "Search system not initialized")
 
     import rag_controller  # type: ignore
@@ -234,6 +234,7 @@ def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
 
     return out
 
+
 def ask_corpus(question: str) -> str:
     """
     Retrieval + LLM proxy answer using rag_controller.ask(state,...).
@@ -254,7 +255,8 @@ def ask_corpus(question: str) -> str:
 
     ans = _async_to_sync(_run)()
     return (ans or "").strip()
-    
+
+
 def chat_with_corpus(query: str, top_k: int = 10):
     """
     Returns (answer: str, docs: list[dict])
@@ -272,35 +274,13 @@ def chat_with_corpus(query: str, top_k: int = 10):
     if retrieval_state is None:
         raise RuntimeError("Search system not initialized")
 
-    import rag_controller  # must be importable in this environment
-
-    from asgiref.sync import async_to_sync  # pip install asgiref
-
     q = (query or "").strip()
     if not q:
         return ("", [])
 
     async def _run():
         # ---------- 1) Get answer ----------
-        # Prefer ask() if present (your current controller showed this exists)
-        if hasattr(rag_controller, "ask"):
-            answer = await rag_controller.ask(retrieval_state, q, verbose=False)
-        else:
-            # Fallback path if your controller is more "primitive"
-            if not hasattr(rag_controller, "sparse_retrieve") or not hasattr(rag_controller, "build_context"):
-                raise AttributeError("rag_controller must expose ask() OR (sparse_retrieve + build_context + LLM call)")
-
-            docs_for_answer = await rag_controller.sparse_retrieve(retrieval_state, q)
-            context = rag_controller.build_context(docs_for_answer, q)
-
-            # Try common LLM-call function names if ask() isn't present
-            if hasattr(rag_controller, "ask_hf"):
-                answer = await rag_controller.ask_hf(q, context)
-            elif hasattr(rag_controller, "ask_llm"):
-                # only used if it exists; fixes your current AttributeError
-                answer = await rag_controller.ask_llm(q, context)
-            else:
-                raise AttributeError("rag_controller has no ask()/ask_hf()/ask_llm() to generate an answer")
+        answer = await rag_controller.ask(retrieval_state, q, verbose=False)
 
         # ---------- 2) Get docs for references ----------
         # Prefer a dedicated search_references() if present, since it often returns richer metadata
@@ -323,13 +303,14 @@ def chat_with_corpus(query: str, top_k: int = 10):
         return (str(answer or "").strip(), docs[: max(0, int(top_k) or 0)])
 
     return async_to_sync(_run)()
-    
+
 
 # ------------------ Routes: UI ------------------
 
 @app.get("/")
 def index():
     return render_template("index.html")
+
 
 @app.after_request
 def no_cache_html(resp):
@@ -339,6 +320,7 @@ def no_cache_html(resp):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
     return resp
+
 
 # ------------------ Routes: Debug request logging (optional but useful) ------------------
 
@@ -353,6 +335,7 @@ def debug_request():
             app_logger.info("Body (first 2000 bytes): %s", raw[:2000])
         app_logger.info("JSON: %s", request.get_json(silent=True))
 
+
 # ------------------ Routes: Auth ------------------
 
 @app.post("/api/unlock")
@@ -364,15 +347,24 @@ def api_unlock():
         session["unlocked"] = False
         return jsonify({"ok": False, "message": "Not today"}), 403
 
+    # each unlock creates a new uuid
+    # TODO: Make this robust against an attacker who farms uuids.
+    new_uuid = uuid.uuid4()
+
     ok = any(hmac.compare_digest(pw, real) for real in ALLOWED_PASSWORDS)
     session["unlocked"] = bool(ok)
 
-    return (jsonify({"ok": True, "message": "Access Granted"}), 200) if ok else \
-           (jsonify({"ok": False, "message": "Not today"}), 403)
+    return (jsonify({"ok": True,
+                     "message": "Access Granted",
+                     "user_id": str(new_uuid),
+                     }), 200) if ok else \
+        (jsonify({"ok": False, "message": "Not today"}), 403)
+
 
 @app.get("/api/access")
 def api_access():
     return jsonify({"ok": True, "unlocked": _is_unlocked()}), 200
+
 
 # ------------------ Routes: Demo ping ------------------
 
@@ -386,10 +378,11 @@ def api_ping():
         "message": "Flask received your message successfully."
     })
 
+
 # ------------------ Routes: Search (always allowed) ------------------
 
 @app.post("/api/search")
-def on_search():
+def api_search():
     try:
         payload = request.get_json(silent=True) or {}
         query = (payload.get("query") or "").strip()
@@ -471,7 +464,7 @@ def on_search():
 # ------------------ Routes: Chat (gated) ------------------
 
 @app.post("/api/chat")
-def on_chat():
+def api_chat():
     locked = _require_unlocked()
     if locked:
         return locked
@@ -481,33 +474,84 @@ def on_chat():
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
 
+    # TODO: Enforce user_id must equal current uuid or fail request.
+    user_id = payload.get("user_id", "none")
+    # if not isinstance(user_id, str) or not msg.strip():
+    #    app_logger.warn("Chat request user_id was invalid")
+    #    return jsonify({
+    #        "ok": False,
+    #        "error": "Field 'user_id' must be a string"
+    #    }), 400
+
     try:
+        app_logger.info(f"Inserting new job for user_id {user_id} into db...")
+        job_id = db.insert_job(user_id, msg)
+        app_logger.info(f"Job write to db was successful, job_id {job_id}.")
+    except Exception as e:
+        app_logger.warning(f"Chat failed due to db job insert problem: {e}")
+
+        return jsonify({
+            "ok": False,
+            "error": "Could not insert job to database",
+            "job_id": "none",
+            "detail": ""
+        }), 500
+
+    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    if not model_ready:
+        preview_msg = msg[:40]
+        app_logger.warning(f"Model is not ready. Queueing msg for user {user_id}. Msg: {preview_msg}...  ")
+
+        # send wake-up request to model
+        _async_to_sync(rag_controller.send_warmup)()
+        rag_controller.queue_job(user_id, job_id, msg)
+
+        return jsonify({
+            "ok": False,
+            "error": "Model not ready. Job was queued.",
+            "job_id": job_id,
+            "detail": ""
+        }), 200
+    else:
+        app_logger.info("Model is ready for requests")
+
+    try:
+        app_logger.info("Triggering chat_with_corpus...")
         answer, docs = chat_with_corpus(msg, top_k=10)
 
+        app_logger.info(f"Marking job {job_id} as done in db...")
+        db.mark_done(job_id, answer)
     except RuntimeError as e:
+        app_logger.error("chat_with_corpus failed: {e}")
         return jsonify({
             "ok": False,
             "error": "Search system not initialized",
+            "job_id": job_id,
             "detail": str(e)
         }), 503
     except Exception as e:
-        app_logger.exception("Chat failed")
+        app_logger.error("chat_with_corpus failed: {e}")
+        app_logger.warning(f"Chat failed with exception: {e}")
         return jsonify({
             "ok": False,
             "error": "Chat failed",
+            "job_id": job_id,
             "detail": str(e)
         }), 500
 
+    app_logger.info("chat operation was completed successfully")
     return jsonify({
         "ok": True,
         "reply": answer,
-        "references": docs,   # ✅ THIS IS WHAT WAS MISSING
+        "job_id": job_id,
+        "references": docs,  # ✅ THIS IS WHAT WAS MISSING
     }), 200
+
 
 # ------------------ Routes: A/B (gated, simple dev version) ------------------
 
 @app.post("/api/ab")
-def on_ab():
+def api_ab():
     locked = _require_unlocked()
     if locked:
         return locked
@@ -535,20 +579,27 @@ def on_ab():
         "references": [],
     }), 200
 
+
 # ------------------ Routes: Feedback + Status + Queue ------------------
 
 @app.route("/api/feedback", methods=["POST", "GET"])
-def on_feedback():
+def api_feedback():
     return jsonify({"ok": True, "status": "feedback was successful"}), 200
 
+
 @app.route("/api/status", methods=["GET", "POST"])
-def on_status():
+def api_status():
+    model_check_timeout_secs = 5
+    model_ready = _async_to_sync(rag_controller.is_model_ready(model_check_timeout_secs))()
+
     return jsonify({
         "ok": True,
+        "status": "status was successful",
         "unlocked": _is_unlocked(),
         "retrieval_state_ready": retrieval_state is not None,
-        "last_init_error": _last_init_error,
+        "model_ready": model_ready,
     }), 200
+
 
 @app.get("/api/queue")
 def api_queue():
@@ -558,6 +609,7 @@ def api_queue():
         "queries_in_line": random.randint(0, 7),
         "server_time": time.time()
     }), 200
+
 
 # ------------------ Local dev runner ------------------
 

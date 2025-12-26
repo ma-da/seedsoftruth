@@ -4,4 +4,4 @@ cookies.txt
 .*.swp
 .idea/
 __pycache__/
-
+._*.py

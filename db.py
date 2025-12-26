@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TIMESTAMP NOT NULL,
     completed_at TIMESTAMP,
     response TEXT
+
+- For MVP, we will use the uuid as the user_id. This might change when we have dedicated user accounts.
 );
 """
 import logging
