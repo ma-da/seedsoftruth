@@ -34,6 +34,9 @@ import logging
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+
+import atomics
+
 import rag_controller
 
 from asgiref.sync import async_to_sync  # pip install asgiref
@@ -74,6 +77,11 @@ if os.environ.get("TEMPLATES_AUTO_RELOAD", "1") == "1":
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
 
+# Due to GIL, booleans should be thread-safe.
+app_is_shutdown = False
+
+# inflight requests
+inflight_chat_reqs = atomics.INT
 
 # ------------------ Password gating ------------------
 
@@ -151,6 +159,81 @@ def init_state(force: bool = False) -> bool:
             return False
 
 
+def worker_body():
+    global app_is_shutdown
+    MODEL_NOT_READY_REPORTING_INTERVAL = 5
+    not_ready_interval = MODEL_NOT_READY_REPORTING_INTERVAL - 1  # lets first report happen sooner
+    worker_ready_report = False
+    app_logger.info("App worker started")
+
+    while not app_is_shutdown:
+        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+        if not model_ready:
+            not_ready_interval = not_ready_interval + 1
+            worker_ready_report = False
+            if not_ready_interval > MODEL_NOT_READY_REPORTING_INTERVAL:
+                app_logger.info("Model still not ready. Worker body waiting.")
+                not_ready_interval = 0
+
+        if not worker_ready_report:
+            app_logger.info("Model is ready. Worker is active.")
+            worker_ready_report = True
+
+        queued_job = rag_controller.get_next_queued_job()
+
+        try:
+            app_logger.info(f"Worker chat_with_corpus for job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
+            answer, docs = chat_with_corpus(queued_job.prompt, top_k=10)
+
+            resp = rag_controller.QueuedResponse(
+                ok=True,
+                reply=answer,
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                detail="success",
+                references=docs
+            )
+            rag_controller.queue_outgoing(resp)
+
+            app_logger.info(f"Worker query job_id {queued_job.job_id} was executed succesfully. Marking done in db.")
+            db.mark_done(queued_job.job_id, answer)
+
+        except RuntimeError as e:
+            app_logger.error("chat_with_corpus failed in worker with runtime error: {e}")
+
+            resp = rag_controller.QueuedResponse(
+                ok=False,
+                error="Search system not initialized",
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                detail=str(e),
+            )
+            rag_controller.queue_outgoing(resp)
+
+        except Exception as e:
+            app_logger.error("chat_with_corpus failed in worker with exception: {e}")
+
+            resp = rag_controller.QueuedResponse(
+                ok=False,
+                error="Chat failed",
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                detail=str(e),
+            )
+            rag_controller.queue_outgoing(resp)
+
+        rag_controller.pop_next_queued_job()
+
+    app_logger.info("App worker shutdown")
+
+
+def init_worker():
+    worker = threading.Thread(target=worker_body)
+    worker.daemon = True
+    worker.start()
+    logging.info("Started daemon worker thread")
+
+
 def ensure_state() -> bool:
     """Lazy initializer used by routes. Returns True if ready."""
     return init_state(force=False)
@@ -160,6 +243,7 @@ def ensure_state() -> bool:
 # If this fails (network down, etc.), ensure_state() will keep retrying on requests.
 init_state(force=False)
 db.init_db()
+init_worker()
 
 
 # ------------------ Async bridge helpers ------------------
@@ -279,22 +363,20 @@ def chat_with_corpus(query: str, top_k: int = 10):
         return ("", [])
 
     async def _run():
-        # ---------- 1) Get answer ----------
+        # ---------- 1) Get answer from LLM ----------
         answer = await rag_controller.ask(retrieval_state, q, verbose=False)
 
         # ---------- 2) Get docs for references ----------
         # Prefer a dedicated search_references() if present, since it often returns richer metadata
         docs = []
-        if hasattr(rag_controller, "search_references"):
-            pack = await rag_controller.search_references(retrieval_state, q, top_k=top_k)
-            if isinstance(pack, dict):
-                docs = pack.get("results", []) or []
-            elif isinstance(pack, list):
-                docs = pack
-        elif hasattr(rag_controller, "sparse_retrieve"):
-            docs = await rag_controller.sparse_retrieve(retrieval_state, q)
-        else:
-            docs = []
+        pack = await rag_controller.search_references(retrieval_state, q, top_k=top_k)
+        if isinstance(pack, dict):
+            docs = pack.get("results", []) or []
+        elif isinstance(pack, list):
+            docs = pack
+
+        # TODO: Old code. Remove when no longer needed.
+        # docs = await rag_controller.sparse_retrieve(retrieval_state, q)
 
         # normalize output types
         if not isinstance(docs, list):
@@ -465,6 +547,8 @@ def api_search():
 
 @app.post("/api/chat")
 def api_chat():
+    global inflight_chat_reqs
+
     locked = _require_unlocked()
     if locked:
         return locked
@@ -476,6 +560,8 @@ def api_chat():
 
     # TODO: Enforce user_id must equal current uuid or fail request.
     user_id = payload.get("user_id", "none")
+
+    # TODO: Enforce used_id required once UI is updated to send it
     # if not isinstance(user_id, str) or not msg.strip():
     #    app_logger.warn("Chat request user_id was invalid")
     #    return jsonify({
@@ -494,6 +580,7 @@ def api_chat():
             "ok": False,
             "error": "Could not insert job to database",
             "job_id": "none",
+            "user_id": user_id,
             "detail": ""
         }), 500
 
@@ -510,6 +597,7 @@ def api_chat():
             "ok": False,
             "error": "Model not ready. Job was queued.",
             "job_id": job_id,
+            "user_id": user_id,
             "detail": ""
         }), 200
     else:
@@ -517,25 +605,38 @@ def api_chat():
 
     try:
         app_logger.info("Triggering chat_with_corpus...")
+
+        # track the inflight requests for queue depth reporting
+        inflight_chat_reqs.inc()
+
+        # LLM model call goes here
         answer, docs = chat_with_corpus(msg, top_k=10)
 
         app_logger.info(f"Marking job {job_id} as done in db...")
         db.mark_done(job_id, answer)
+
+        inflight_chat_reqs.dec()
     except RuntimeError as e:
         app_logger.error("chat_with_corpus failed: {e}")
+
+        inflight_chat_reqs.dec()
         return jsonify({
             "ok": False,
             "error": "Search system not initialized",
             "job_id": job_id,
+            "user_id": user_id,
             "detail": str(e)
         }), 503
     except Exception as e:
         app_logger.error("chat_with_corpus failed: {e}")
         app_logger.warning(f"Chat failed with exception: {e}")
+
+        inflight_chat_reqs.dec()
         return jsonify({
             "ok": False,
             "error": "Chat failed",
             "job_id": job_id,
+            "user_id": user_id,
             "detail": str(e)
         }), 500
 
@@ -544,7 +645,9 @@ def api_chat():
         "ok": True,
         "reply": answer,
         "job_id": job_id,
-        "references": docs,  # ✅ THIS IS WHAT WAS MISSING
+        "user_id": user_id,
+        "detail": "success",
+        "references": docs
     }), 200
 
 
@@ -582,6 +685,9 @@ def api_ab():
 
 # ------------------ Routes: Feedback + Status + Queue ------------------
 
+MODEL_CHECK_TIMEOUT_SECS = 5
+
+
 @app.route("/api/feedback", methods=["POST", "GET"])
 def api_feedback():
     return jsonify({"ok": True, "status": "feedback was successful"}), 200
@@ -589,8 +695,9 @@ def api_feedback():
 
 @app.route("/api/status", methods=["GET", "POST"])
 def api_status():
-    model_check_timeout_secs = 5
-    model_ready = _async_to_sync(rag_controller.is_model_ready(model_check_timeout_secs))()
+    model_ready = _async_to_sync(rag_controller.is_model_ready(MODEL_CHECK_TIMEOUT_SECS))()
+    unlocked = _is_unlocked()
+    app_logger.info(f"Status request was received. is_unlocked: {unlocked}, model_ready: {model_ready}")
 
     return jsonify({
         "ok": True,
@@ -601,12 +708,55 @@ def api_status():
     }), 200
 
 
+# TODO: The below may not be accurate for queries that are purely in-flight and not stored in the queue.
 @app.get("/api/queue")
 def api_queue():
-    # Dev stub — shows UI movement
+    """
+    This allows clients to get info on queue depth and endpoint status.
+    Logged-in clients are able to get the status of their requests and any pending responses.
+    """
+    global inflight_chat_reqs
+
+    locked = _require_unlocked()
+    model_ready = _async_to_sync(rag_controller.is_model_ready(MODEL_CHECK_TIMEOUT_SECS))()
+    queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.load()
+
+    payload = request.get_json(silent=True) or {}
+    user_id = (payload.get("user_id") or "").strip()
+
+    if locked and user_id:
+        # This is logged-in mode. It will fetch any user specific info and outgoing responses.
+        app_logger.info(f"processing api_queue() request in logged-in mode for user {user_id}")
+
+        job_index, queued_job = rag_controller.fetch_queued_job_info(user_id)
+        queued_resp = rag_controller.fetch_queued_outgoing_info(user_id)
+
+        if queued_job is not None or queued_resp is not None:
+            app_logger.info(f"Queued response was found for used_id {user_id}")
+
+            resp_json = ""
+            if queued_resp is not None:
+                resp_json = queued_resp.to_json()
+
+            return jsonify({
+                "ok": True,
+                "queries_in_line": queue_len,
+                "job_in_line": job_index,
+                "outgoing_resp": resp_json,
+                "model_ready": model_ready,
+                "server_time": time.time()
+            }), 200
+        else:
+            app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general.")
+
+
+    # This is the general view for those that aren't logged in.
+    app_logger.info(f"processing api_queue() request in general mode")
+
     return jsonify({
         "ok": True,
-        "queries_in_line": random.randint(0, 7),
+        "queries_in_line": queue_len,
+        "model_ready": model_ready,
         "server_time": time.time()
     }), 200
 

@@ -14,19 +14,17 @@ composable, and much easier to reason about.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
+from dataclasses_json import dataclass_json
 import asyncio
 import json
-import queue
 import re
 import time
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 import os
 import numpy as np
 import requests
-from collections import Counter
 
 import logging_config
 
@@ -86,12 +84,18 @@ class QueuedJob:
     prompt: str
 
 
+@dataclass_json
 @dataclass
 class QueuedResponse:
+    ok: bool
+    error: str
+    detail: str
+    job_id: str
     user_id: str
     prompt: str
     reply: str
     references: str
+
 
 # ================== BOOT ==================
 
@@ -394,10 +398,17 @@ WORKER_POLL_INTERVAL_SECS = 2
 MAX_WORKERS = 1
 
 # this queue holds the jobs awaiting to be processed
-job_queue = queue.Queue()
+job_queue = []
+job_lock = threading.Lock
 
 # this queue holds outgoing responses that need to be sent to client
-outgoing_queue = queue.Queue()
+outgoing_queue = []
+outgoing_lock = threading.Lock
+
+# this track the users in-flights so we can quickly check if there is an inflight request
+# currently we will only allow one inflight request at a time
+inflight_users = {}
+inflight_lock = threading.Lock
 
 HF_REQ_TIMEOUT_SECS = 5
 
@@ -684,18 +695,90 @@ async def search_references(
 # ================== Queueing ==================
 
 def queue_job(user_id, job_id, msg) -> bool:
+    global job_queue, job_lock
+
     queued_job = QueuedJob(user_id, job_id, msg)
+    with job_lock:
+        job_queue.append(queued_job)
+        qsize = len(job_queue)
 
-    try:
-        job_queue.put(queued_job, False)
-        rag_logger.info(f"Job with id {job_id} was queued successfully. Curr depth: {job_queue.qsize()}")
-        return True
-    except queue.Full:
-        rag_logger.error(f"Job queue was full. Msg dropped for user {user_id}.")
-    except Exception as e:
-        rag_logger.error(f"Exception occurred. Msg dropped for user {user_id}. Detail: {e}")
+    rag_logger.info(f"Job with id {job_id} was queued successfully. Curr depth: {qsize}")
+    return qsize
 
-    return False
+
+def fetch_queued_job_info(user_id) -> (int, Optional[QueuedJob]):
+    global job_queue, job_lock
+
+    with job_lock:
+        for i, item in enumerate(job_queue):
+           if user_id == item.user_id:
+               return i, item
+
+    return 0, None
+
+
+def get_next_queued_job() -> Optional[QueuedJob]:
+    global job_queue, job_lock
+
+    with job_lock:
+        if len(job_queue) == 0:
+            return None
+        return job_queue[0]
+
+def pop_next_queued_job():
+    global job_queue, job_lock
+
+    with job_lock:
+        if len(job_queue) == 0:
+            return
+        job_queue.pop(0)
+
+def job_queue_len():
+    global job_queue, job_lock
+
+    with job_lock:
+        return len(job_queue)
+
+
+# TODO: For reference. Remove me later.
+#class QueuedResponse:
+#    ok: bool
+#    error: str
+#    detail: str
+#    job_id: str
+#    user_id: str
+#    prompt: str
+#    reply: str
+#    references: str
+
+def queue_outgoing(response) -> bool:
+    global outgoing_queue, outgoing_lock
+
+    if not isinstance(response, QueuedResponse):
+        raise RuntimeError("queue_outgoing requires QueuedResponse param")
+
+    with outgoing_lock:
+        outgoing_queue.append(response)
+        qsize = len(outgoing_queue)
+
+    rag_logger.info(f"Outgoing resp with job_id {response.job_id} was queued successfully for sending. Curr depth: {qsize}")
+    return qsize
+
+
+# Currently, we only support one inflight request. This might have to change in the future if we do more.
+# Fetching removes the item from queue
+def fetch_queued_outgoing_info(user_id) -> Optional[QueuedResponse]:
+    global outgoing_queue, outgoing_lock
+
+    with outgoing_lock:
+        for i, item in enumerate(outgoing_queue):
+            if user_id == item.user_id:
+                del outgoing_queue[i]
+                rag_logger.info(f"Fetched queue outgoing info for job_id {item.job_id}, user_id {item.user_id}")
+                return item
+
+    return None
+
 
 # ================== MAIN ==================
 
