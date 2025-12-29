@@ -28,15 +28,11 @@ from __future__ import annotations
 import os
 import hmac
 import time
-import random
 import threading
 import logging
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-
-import atomics
-
 import rag_controller
 
 from asgiref.sync import async_to_sync  # pip install asgiref
@@ -44,6 +40,7 @@ from flask import Flask, render_template, request, jsonify, session
 
 import traceback
 import inspect
+import utils
 
 import db
 
@@ -81,7 +78,7 @@ if os.environ.get("TEMPLATES_AUTO_RELOAD", "1") == "1":
 app_is_shutdown = False
 
 # inflight requests
-inflight_chat_reqs = atomics.INT
+inflight_chat_reqs = utils.SafeInt(0)
 
 # ------------------ Password gating ------------------
 
@@ -100,6 +97,25 @@ def _require_unlocked():
     if not _is_unlocked():
         return jsonify({"ok": False, "error": "locked", "message": "Not today"}), 403
     return None
+
+
+# ------------------ Async bridge helpers ------------------
+
+def _async_to_sync(async_fn):
+    """
+    Convert an async function (no args) to sync call.
+    Prefers asgiref, which is the most reliable for sync Flask under gunicorn.
+    """
+    try:
+        return async_to_sync(async_fn)
+    except Exception as e:
+        app_logger.error("Exception path in _async_to_sync, details: {e}")
+        # fallback: run in a fresh event loop (ok for dev; not ideal at scale)
+        import asyncio
+        def _runner():
+            return asyncio.run(async_fn())
+
+        return _runner
 
 
 # ------------------ Retrieval state (boot + ensure) ------------------
@@ -162,6 +178,8 @@ def init_state(force: bool = False) -> bool:
 def worker_body():
     global app_is_shutdown
     MODEL_NOT_READY_REPORTING_INTERVAL = 5
+    WORKER_NO_WORK_SLEEP_INTERVAL_SECS = 3
+
     not_ready_interval = MODEL_NOT_READY_REPORTING_INTERVAL - 1  # lets first report happen sooner
     worker_ready_report = False
     app_logger.info("App worker started")
@@ -171,15 +189,22 @@ def worker_body():
         if not model_ready:
             not_ready_interval = not_ready_interval + 1
             worker_ready_report = False
+
             if not_ready_interval > MODEL_NOT_READY_REPORTING_INTERVAL:
                 app_logger.info("Model still not ready. Worker body waiting.")
                 not_ready_interval = 0
+
+            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
 
         if not worker_ready_report:
             app_logger.info("Model is ready. Worker is active.")
             worker_ready_report = True
 
         queued_job = rag_controller.get_next_queued_job()
+        if not queued_job:
+            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
 
         try:
             app_logger.info(f"Worker chat_with_corpus for job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
@@ -187,10 +212,12 @@ def worker_body():
 
             resp = rag_controller.QueuedResponse(
                 ok=True,
-                reply=answer,
+                error="none",
+                detail="success",
                 job_id=queued_job.job_id,
                 user_id=queued_job.user_id,
-                detail="success",
+                prompt=queued_job.prompt,
+                reply=answer,
                 references=docs
             )
             rag_controller.queue_outgoing(resp)
@@ -204,9 +231,12 @@ def worker_body():
             resp = rag_controller.QueuedResponse(
                 ok=False,
                 error="Search system not initialized",
+                detail=str(e),
                 job_id=queued_job.job_id,
                 user_id=queued_job.user_id,
-                detail=str(e),
+                prompt=queued_job.prompt,
+                reply="none",
+                references="none"
             )
             rag_controller.queue_outgoing(resp)
 
@@ -216,9 +246,12 @@ def worker_body():
             resp = rag_controller.QueuedResponse(
                 ok=False,
                 error="Chat failed",
+                detail=str(e),
                 job_id=queued_job.job_id,
                 user_id=queued_job.user_id,
-                detail=str(e),
+                prompt=queued_job.prompt,
+                reply="none",
+                references="none"
             )
             rag_controller.queue_outgoing(resp)
 
@@ -246,23 +279,6 @@ db.init_db()
 init_worker()
 
 
-# ------------------ Async bridge helpers ------------------
-
-def _async_to_sync(async_fn):
-    """
-    Convert an async function (no args) to sync call.
-    Prefers asgiref, which is the most reliable for sync Flask under gunicorn.
-    """
-    try:
-        return async_to_sync(async_fn)
-    except Exception as e:
-        app_logger.error("Exception path in _async_to_sync, details: {e}")
-        # fallback: run in a fresh event loop (ok for dev; not ideal at scale)
-        import asyncio
-        def _runner():
-            return asyncio.run(async_fn())
-
-        return _runner
 
 
 # ------------------ Shared search/chat functions ------------------
@@ -558,16 +574,26 @@ def api_chat():
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
 
-    # TODO: Enforce user_id must equal current uuid or fail request.
-    user_id = payload.get("user_id", "none")
+    # optional param that lets us test force to the queue
+    force_queue_str = (payload.get("force_queue") or "").strip()
+    force_queue = utils.str_to_bool(force_queue_str, strict=False)
 
-    # TODO: Enforce used_id required once UI is updated to send it
-    # if not isinstance(user_id, str) or not msg.strip():
-    #    app_logger.warn("Chat request user_id was invalid")
-    #    return jsonify({
-    #        "ok": False,
-    #        "error": "Field 'user_id' must be a string"
-    #    }), 400
+    user_id = payload.get("user_id", "none")
+    if not isinstance(user_id, str):
+        app_logger.warn("Chat request user_id was invalid")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' must be a string"
+        }), 400
+
+    # TODO: Enforce user_id must equal current or seen uuid or fail request.
+    user_id = user_id.strip()
+    if user_id == "none":
+        app_logger.warning("Chat request user_id cannot be none")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' cannot be none or empty"
+        }), 400
 
     try:
         app_logger.info(f"Inserting new job for user_id {user_id} into db...")
@@ -585,7 +611,7 @@ def api_chat():
         }), 500
 
     model_ready = _async_to_sync(rag_controller.is_model_ready)()
-    if not model_ready:
+    if not model_ready or force_queue:
         preview_msg = msg[:40]
         app_logger.warning(f"Model is not ready. Queueing msg for user {user_id}. Msg: {preview_msg}...  ")
 
@@ -695,7 +721,7 @@ def api_feedback():
 
 @app.route("/api/status", methods=["GET", "POST"])
 def api_status():
-    model_ready = _async_to_sync(rag_controller.is_model_ready(MODEL_CHECK_TIMEOUT_SECS))()
+    model_ready = _async_to_sync(rag_controller.is_model_ready)()
     unlocked = _is_unlocked()
     app_logger.info(f"Status request was received. is_unlocked: {unlocked}, model_ready: {model_ready}")
 
@@ -709,7 +735,7 @@ def api_status():
 
 
 # TODO: The below may not be accurate for queries that are purely in-flight and not stored in the queue.
-@app.get("/api/queue")
+@app.post("/api/queue")
 def api_queue():
     """
     This allows clients to get info on queue depth and endpoint status.
@@ -718,19 +744,22 @@ def api_queue():
     global inflight_chat_reqs
 
     locked = _require_unlocked()
-    model_ready = _async_to_sync(rag_controller.is_model_ready(MODEL_CHECK_TIMEOUT_SECS))()
-    queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.load()
+    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.get()
+    resp_len = rag_controller.outgoing_queue_len()
 
     payload = request.get_json(silent=True) or {}
     user_id = (payload.get("user_id") or "").strip()
 
-    if locked and user_id:
+    app_logger.info(f"locked: {not locked}, user_id: {user_id}")
+    if not locked and user_id:
         # This is logged-in mode. It will fetch any user specific info and outgoing responses.
         app_logger.info(f"processing api_queue() request in logged-in mode for user {user_id}")
 
         job_index, queued_job = rag_controller.fetch_queued_job_info(user_id)
         queued_resp = rag_controller.fetch_queued_outgoing_info(user_id)
 
+        app_logger.info(f"queued_job found: {queued_job is not None}, queued_resp found: {queued_resp is not None}")
         if queued_job is not None or queued_resp is not None:
             app_logger.info(f"Queued response was found for used_id {user_id}")
 
@@ -741,6 +770,7 @@ def api_queue():
             return jsonify({
                 "ok": True,
                 "queries_in_line": queue_len,
+                "resps_in_line": resp_len,
                 "job_in_line": job_index,
                 "outgoing_resp": resp_json,
                 "model_ready": model_ready,
@@ -756,6 +786,7 @@ def api_queue():
     return jsonify({
         "ok": True,
         "queries_in_line": queue_len,
+        "resps_in_line": resp_len,
         "model_ready": model_ready,
         "server_time": time.time()
     }), 200

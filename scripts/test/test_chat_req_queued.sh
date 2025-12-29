@@ -6,5 +6,6 @@ curl -X POST http://localhost:5000/api/chat \
   -d '{
         "message": "Who killed JFK?",
         "user_id": "test_user",
+        "force_queue": "true",
         "max_new_tokens": 500
       }'

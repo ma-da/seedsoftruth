@@ -189,7 +189,7 @@ def _strip_phrases(s: str) -> str:
 def _tokenize_js_parity(text: str) -> List[str]:
     """
     Matches the known-good JS tokenize():
-      strip phrases -> lowercase -> remove control chars -> normalize spaces -> \b\w+\b
+      strip phrases -> lowercase -> remove control chars -> normalize spaces
     """
     t = _strip_phrases(str(text or "")).lower()
     t = _CTRL_RE.sub(" ", t)
@@ -399,16 +399,16 @@ MAX_WORKERS = 1
 
 # this queue holds the jobs awaiting to be processed
 job_queue = []
-job_lock = threading.Lock
+job_lock = threading.Lock()
 
 # this queue holds outgoing responses that need to be sent to client
 outgoing_queue = []
-outgoing_lock = threading.Lock
+outgoing_lock = threading.Lock()
 
 # this track the users in-flights so we can quickly check if there is an inflight request
 # currently we will only allow one inflight request at a time
 inflight_users = {}
-inflight_lock = threading.Lock
+inflight_lock = threading.Lock()
 
 HF_REQ_TIMEOUT_SECS = 5
 
@@ -740,17 +740,6 @@ def job_queue_len():
         return len(job_queue)
 
 
-# TODO: For reference. Remove me later.
-#class QueuedResponse:
-#    ok: bool
-#    error: str
-#    detail: str
-#    job_id: str
-#    user_id: str
-#    prompt: str
-#    reply: str
-#    references: str
-
 def queue_outgoing(response) -> bool:
     global outgoing_queue, outgoing_lock
 
@@ -772,12 +761,20 @@ def fetch_queued_outgoing_info(user_id) -> Optional[QueuedResponse]:
 
     with outgoing_lock:
         for i, item in enumerate(outgoing_queue):
+            #rag_logger.info(f"Outgoing fetch: found {item.user_id} vs. target {user_id}")
             if user_id == item.user_id:
                 del outgoing_queue[i]
                 rag_logger.info(f"Fetched queue outgoing info for job_id {item.job_id}, user_id {item.user_id}")
                 return item
 
     return None
+
+
+def outgoing_queue_len():
+    global outgoing_queue, outgoing_lock
+
+    with outgoing_lock:
+        return len(outgoing_queue)
 
 
 # ================== MAIN ==================
