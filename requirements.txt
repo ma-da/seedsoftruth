@@ -12,6 +12,7 @@ chardet==5.2.0
 click==8.1.8
 configobj==5.0.9
 constantly==23.10.4
+dataclasses-json==0.6.7
 flask==3.0.2
 gunicorn==21.2.0
 numpy==2.4.0
