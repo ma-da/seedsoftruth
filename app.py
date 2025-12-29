@@ -279,8 +279,6 @@ db.init_db()
 init_worker()
 
 
-
-
 # ------------------ Shared search/chat functions ------------------
 
 def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
