@@ -178,24 +178,40 @@ def init_state(force: bool = False) -> bool:
 def worker_body():
     global app_is_shutdown
     MODEL_NOT_READY_REPORTING_INTERVAL = 5
-    WORKER_NO_WORK_SLEEP_INTERVAL_SECS = 3
+    WORKER_NO_WORK_SLEEP_INTERVAL_SECS = 5
+    WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL = 20
 
-    not_ready_interval = MODEL_NOT_READY_REPORTING_INTERVAL - 1  # lets first report happen sooner
+    model_not_ready_interval = MODEL_NOT_READY_REPORTING_INTERVAL - 1  # let's first report happen sooner
+    worker_no_queued_job_interval = WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL - 1
+
     worker_ready_report = False
     app_logger.info("App worker started")
 
     while not app_is_shutdown:
-        model_ready = _async_to_sync(rag_controller.is_model_ready)()
-        if not model_ready:
-            not_ready_interval = not_ready_interval + 1
-            worker_ready_report = False
-
-            if not_ready_interval > MODEL_NOT_READY_REPORTING_INTERVAL:
-                app_logger.info("Model still not ready. Worker body waiting.")
-                not_ready_interval = 0
+        if not rag_controller.has_queued_job():
+            worker_no_queued_job_interval = worker_no_queued_job_interval + 1
+            if worker_no_queued_job_interval > WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL:
+                app_logger.info("Worker thread heartbeat. No job work to do.")
+                worker_no_queued_job_interval = 0
 
             time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
             continue
+        else:
+            worker_no_queued_job_interval = 0
+
+        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+        if not model_ready:
+            model_not_ready_interval = model_not_ready_interval + 1
+            worker_ready_report = False
+
+            if model_not_ready_interval > MODEL_NOT_READY_REPORTING_INTERVAL:
+                app_logger.info("Model still not ready. Worker body waiting.")
+                model_not_ready_interval = 0
+
+            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
+        else:
+            model_not_ready_interval = 0
 
         if not worker_ready_report:
             app_logger.info("Model is ready. Worker is active.")

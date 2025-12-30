@@ -717,6 +717,13 @@ def fetch_queued_job_info(user_id) -> (int, Optional[QueuedJob]):
     return 0, None
 
 
+def has_queued_job() -> bool:
+    global job_queue, job_lock
+
+    with job_lock:
+        return len(job_queue) > 0
+
+
 def get_next_queued_job() -> Optional[QueuedJob]:
     global job_queue, job_lock
 
