@@ -70,17 +70,17 @@ class SimpleUserRateLimiter:
         Returns true if time difference greater than interval, false if less
         """
         if not isinstance(user_id, str):
-            raise RuntimeError("user_d must be str")
+            raise RuntimeError("user_id must be str")
         if len(user_id) == 0:
-            raise RuntimeError("user_d must be str")
+            raise RuntimeError("user_id must be str")
 
         curr_time = int(time.time())
         last_time = self.user_data.get(user_id)
-        assert curr_time >= last_time  # if not true, then its nonsensical
-        self.user_data['user_id'] = curr_time
+        self.user_data[user_id] = curr_time
 
         if last_time is None:
             return True
         else:
+            assert curr_time >= last_time  # if not true, then its nonsensical
             diff = curr_time - last_time
             return diff >= self.interval_secs

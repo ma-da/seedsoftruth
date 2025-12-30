@@ -618,8 +618,10 @@ def api_chat():
         app_logger.warning("Chat request user_id was rate limited")
         return jsonify({
             "ok": False,
-            "error": "Field 'user_id' cannot be none or empty"
-        }), 400
+            "error": "Chat request was rate limited. Please wait 30 seconds before resubmission."
+        }), 429
+    else:
+        app_logger.info("Rate limiting check passed")
 
     try:
         app_logger.info(f"Inserting new job for user_id {user_id} into db...")
