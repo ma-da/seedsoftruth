@@ -41,6 +41,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# Must run under seeddev for proper permissions
+chown -R seeddev:seeddev "$APP_DIR"
+
 # ──────────────────────────────
 # UPDATE DEPENDENCIES
 # ──────────────────────────────

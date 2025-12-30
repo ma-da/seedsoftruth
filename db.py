@@ -24,7 +24,13 @@ import sqlite3
 import logging
 
 def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        logging.critical(f"No permission to create DB directory: {DB_PATH.parent}")
+        raise
+
+    logging.info(f"Using database at: {DB_PATH.resolve()}")
 
     # Use a generous timeout to tolerate concurrent startup
     conn = sqlite3.connect(
