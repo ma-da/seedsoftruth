@@ -1107,10 +1107,23 @@ async function apiQueue() {
 /* =========================================================
    16) CHAT HANDLING (submit + render)
    ========================================================= */
+function getUserId() {
+  const KEY = 'sot_user_id';
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    // Stable per-browser ID (good enough for dev + non-auth chat)
+    id = (crypto?.randomUUID ? crypto.randomUUID() : `u_${Date.now()}_${Math.random().toString(16).slice(2)}`);
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}   
+   
 async function handleChatSubmit(e) {
   e.preventDefault();
   const text = (els.chatInput.value || '').trim();
   if (!text) return;
+
+  const userId = getUserId();   
 
   if (els.welcomeMessage) els.welcomeMessage.style.display = 'none';
 
@@ -1121,6 +1134,7 @@ async function handleChatSubmit(e) {
   const contextTurns = getContextTurns(toolState.historyTurns);
 
   const payload = {
+    user_id: userId,          
     message: text,
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
@@ -1135,58 +1149,47 @@ async function handleChatSubmit(e) {
       saveToolState();
     }
 
-	if (toolState.mode === 'search') {
-	  const payload = {
-		query: text,
-		max_n: CFG.MAX_REFS,
-		mode: 'search',
-		history_turns: toolState.historyTurns,
-		context: contextTurns, // computed this earlier
-	  };
+    if (toolState.mode === 'search') {
+      const payload = {
+        user_id: userId,      
+        query: text,
+        max_n: CFG.MAX_REFS,
+        mode: 'search',
+        history_turns: toolState.historyTurns,
+        context: contextTurns,
+      };
 
-	  // Dev: log exactly what we send
-	  console.log('[Search → Flask] payload:', payload);
+      console.log('[Search → Flask] payload:', payload);
 
-	  try {
-		const data = await apiSearch(payload);
+      try {
+        const data = await apiSearch(payload);
+        console.log('[Search ← Flask] response:', data);
 
-		// Dev: log exactly what we got back
-		console.log('[Search ← Flask] response:', data);
-		console.log('[Chat ← Flask] ok?', data?.ok, 'reply len', (data?.reply || '').length);
-        console.log('[Chat ← Flask] references type', Array.isArray(data?.references), 'len', data?.references?.length);
-        console.log('[Chat ← Flask] references sample', (data?.references || [])[0]);
+        const bot = data.message || `Found ${data.num_results ?? (data.results?.length ?? 0)} items. Results below`;
+        appendMessage(bot, 'bot');
+        pushTurn(text, bot);
 
-		// Prefer server message if provided
-		const bot = data.message || `Found ${data.num_results ?? (data.results?.length ?? 0)} items. Results below`;
-		appendMessage(bot, 'bot');
-		pushTurn(text, bot);
+        const refs = (Array.isArray(data.results) ? data.results : [])
+          .slice(0, CFG.MAX_REFS)
+          .map((r) => ({
+            title: r.title || r.source_title || 'Reference',
+            source: r.source || r.publication || 'Corpus',
+            snippet: r.snippet || r.text || r.excerpt || '',
+            url: r.url || r.link || ''
+          }));
 
-		// Map your RAG results into your ref-card format
-		const refs = (Array.isArray(data.results) ? data.results : [])
-		  .slice(0, CFG.MAX_REFS)
-		  .map((r) => ({
-			title: r.title || r.source_title || 'Reference',
-			source: r.source || r.publication || 'Corpus',
-			snippet: r.snippet || r.text || r.excerpt || '',
-			url: r.url || r.link || ''
-		  }));
-
-		setReferences(refs);
-	  } catch (err) {
-		console.error('[Search] apiSearch failed:', err);
-
-		// Try to show something useful to the user and status panel
-		appendMessage('Search request failed (dev). Check server logs.', 'bot');
-		pushStatusMessage(String(err?.message || err));
-
-		// Clear refs so you don't show stale ones
-		setReferences([]);
-	  }
-	  return;
-	}
-
+        setReferences(refs);
+      } catch (err) {
+        console.error('[Search] apiSearch failed:', err);
+        appendMessage('Search request failed (dev). Check server logs.', 'bot');
+        pushStatusMessage(String(err?.message || err));
+        setReferences([]);
+      }
+      return;
+    }
 
     if (toolState.mode === 'ab') {
+      // payload already has user_id
       const data = await apiAB(payload);
       appendABMessage(data.a || '', data.b || '', { labelA: data.labelA, labelB: data.labelB });
       pushTurn(text, `Response A:\n${data.a || ''}\n\nResponse B:\n${data.b || ''}`);
@@ -1195,14 +1198,13 @@ async function handleChatSubmit(e) {
     }
 
     // chat
-    const data = await apiChat(payload);
+    const data = await apiChat(payload);  // payload already has user_id
     const reply = data.reply || data.message || data.status || '';
     appendMessage(reply || '(no reply)', 'bot');
     pushTurn(text, reply || '(no reply)');
     setReferences(Array.isArray(data.references) ? data.references : []);
 
   } catch (err) {
-    // If locked, force search
     if (err?.status === 403) {
       setModeAccess(false);
       toolState.mode = 'search';
@@ -1217,6 +1219,7 @@ async function handleChatSubmit(e) {
     pushStatusMessage(String(err?.message || err));
   }
 }
+
 
 /* =========================================================
    17) ABOUT MODAL and PING TEST
@@ -1650,3 +1653,4 @@ document.addEventListener('DOMContentLoaded', init);
     spawn(e.clientX, e.clientY);
   }, { passive: true });
 })();
+
