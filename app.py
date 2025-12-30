@@ -80,6 +80,10 @@ app_is_shutdown = False
 # inflight requests
 inflight_chat_reqs = utils.SafeInt(0)
 
+# User rate limiter
+RATE_LIMITING_INTERVAL = 30
+rate_limiter = utils.SimpleUserRateLimiter(RATE_LIMITING_INTERVAL)
+
 # ------------------ Password gating ------------------
 
 def _parse_passwords(env_value: str) -> List[str]:
@@ -577,7 +581,7 @@ def api_search():
 
 @app.post("/api/chat")
 def api_chat():
-    global inflight_chat_reqs
+    global inflight_chat_reqs, rate_limiter
 
     locked = _require_unlocked()
     if locked:
@@ -604,6 +608,14 @@ def api_chat():
     user_id = user_id.strip()
     if user_id == "none":
         app_logger.warning("Chat request user_id cannot be none")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' cannot be none or empty"
+        }), 400
+
+    # rate limit check. blocks if user sending too frequently.
+    if not rate_limiter.check(user_id):
+        app_logger.warning("Chat request user_id was rate limited")
         return jsonify({
             "ok": False,
             "error": "Field 'user_id' cannot be none or empty"
