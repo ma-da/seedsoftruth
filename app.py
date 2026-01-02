@@ -458,10 +458,14 @@ def debug_request():
 def api_unlock():
     payload = request.get_json(silent=True) or {}
     pw = (payload.get("password") or "").strip()
+    app_logger.info(f"Received unlock request, pw: {pw}")
 
     if not pw or not ALLOWED_PASSWORDS:
         session["unlocked"] = False
+        app_logger.info("Password not accepted. Not today.")
         return jsonify({"ok": False, "message": "Not today"}), 403
+    else:
+        app_logger.info("Password accepted. Unlock succeeded.")
 
     # each unlock creates a new uuid
     # TODO: Make this robust against an attacker who farms uuids.
@@ -749,8 +753,16 @@ def api_feedback():
 
 @app.route("/api/status", methods=["GET", "POST"])
 def api_status():
-    model_ready = _async_to_sync(rag_controller.is_model_ready)()
     unlocked = _is_unlocked()
+
+    payload = request.get_json(silent=True) or {}
+    health_str = (payload.get("health") or "").strip()
+    health = utils.str_to_bool(health_str, strict=False)
+    if health:
+        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    else:
+        model_ready = "unchecked"
+
     app_logger.info(f"Status request was received. is_unlocked: {unlocked}, model_ready: {model_ready}")
 
     return jsonify({
@@ -772,14 +784,22 @@ def api_queue():
     global inflight_chat_reqs
 
     locked = _require_unlocked()
-    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    payload = request.get_json(silent=True) or {}
+
+    health_str = (payload.get("health") or "").strip()
+    health = utils.str_to_bool(health_str, strict=False)
+
+    if health:
+        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    else:
+        model_ready = "unchecked"
+
     queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.get()
     resp_len = rag_controller.outgoing_queue_len()
 
-    payload = request.get_json(silent=True) or {}
     user_id = (payload.get("user_id") or "").strip()
+    #app_logger.info(f"locked: {not locked}, user_id: {user_id}")
 
-    app_logger.info(f"locked: {not locked}, user_id: {user_id}")
     if not locked and user_id:
         # This is logged-in mode. It will fetch any user specific info and outgoing responses.
         app_logger.info(f"processing api_queue() request in logged-in mode for user {user_id}")

@@ -72,7 +72,7 @@ class SimpleUserRateLimiter:
         if not isinstance(user_id, str):
             raise RuntimeError("user_id must be str")
         if len(user_id) == 0:
-            raise RuntimeError("user_id must be str")
+            raise RuntimeError("user_id must not be empty")
 
         curr_time = int(time.time())
         last_time = self.user_data.get(user_id)
