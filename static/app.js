@@ -496,6 +496,13 @@ function scrollChatToBottom() {
   if (els.chatContainer) els.chatContainer.scrollTop = els.chatContainer.scrollHeight;
 }
 
+function setBotAvatar(el) {
+  el.textContent = ""; // remove any text
+  el.innerHTML = `
+    <img src="/static/img/logo512.png" alt="" class="message-avatar-img" />
+  `;
+}
+
 function appendMessage(text, role) {
   const row = document.createElement('div');
   row.className = 'message-row ' + (role === 'bot' ? 'bot' : 'user');
@@ -505,7 +512,11 @@ function appendMessage(text, role) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar ' + (role === 'bot' ? 'bot' : 'user');
-  avatar.textContent = (role === 'bot') ? '🌱' : 'You';
+  if (role === "bot") {
+    setBotAvatar(avatar);
+  } else {
+    avatar.textContent = "You";
+  }
 
   const textEl = document.createElement('div');
   textEl.className = 'message-text';
@@ -567,7 +578,7 @@ function appendABMessage(aText, bText, meta = {}) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar bot';
-  avatar.textContent = '🌱';
+  setBotAvatar(avatar);
 
   const wrap = document.createElement('div');
   wrap.className = 'ab-wrap';
@@ -672,6 +683,34 @@ function linkifyPlainUrls(htmlStr) {
   });
 }
 
+function toHttpsUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  return "https://" + s.replace(/^\/+/, "");
+}
+
+function looksLikeUrl(s) {
+  const t = String(s || "").trim();
+  if (!t) return false;
+  // allow full URLs
+  if (/^https?:\/\//i.test(t)) return true;
+  // allow domains/paths like www.wanttoknow.info/...
+  return /^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(t);
+}
+
+function getRefLink(ref) {
+  // Prefer explicit url, otherwise fall back to source if it looks like a URL
+  const u = String(ref?.url || "").trim();
+  if (u) return u;
+
+  const s = String(ref?.source || "").trim();
+  if (looksLikeUrl(s)) return s;
+
+  return "";
+}
+
+
 function sanitizeBasicHtml(htmlStr) {
   // Minimal sanitizer (NOT bulletproof). Best practice is DOMPurify.
   // Removes scripts/styles/iframes and strips on* handlers.
@@ -758,6 +797,7 @@ function setReferences(refs) {
   els.referencesCount.textContent = list.length + ' item' + (list.length === 1 ? '' : 's');
 
   list.forEach((ref, idx) => {
+	console.log("REF", idx, Object.keys(ref), ref.url, ref.source, ref);  
     const card = document.createElement('article');
     card.className = 'ref-card';
 
@@ -766,16 +806,42 @@ function setReferences(refs) {
     const header = document.createElement('div');
     header.className = 'ref-header';
 
-    const titleEl = document.createElement('div');
-    titleEl.className = 'ref-title';
-    titleEl.textContent = ref.title || ('Reference ' + (idx + 1));
-
     const right = document.createElement('div');
     right.className = 'ref-right';
 
-    const badge = document.createElement('span');
-    badge.className = 'ref-badge';
-    badge.textContent = ref.source || 'Corpus';
+    // ✅ clickable URL (green, top-right)
+	const linkText = getRefLink(ref);
+	const href = toHttpsUrl(linkText);
+
+	const badge = document.createElement(linkText ? 'a' : 'span');
+	badge.className = 'ref-badge';
+	badge.textContent = ref.source || 'Corpus';
+
+	if (linkText) {
+	  badge.href = href;
+	  badge.target = '_blank';
+	  badge.rel = 'noopener noreferrer';
+	  badge.addEventListener("click", (e) => e.stopPropagation());
+	}
+
+	if (ref.url) {
+	  const href = toHttpsUrl(String(ref.url).trim());
+	  badge.href = href;
+	  badge.target = '_blank';
+	  badge.rel = 'noopener noreferrer';
+
+	  // keep parent handlers from hijacking the click
+	  badge.addEventListener('click', (e) => {
+		e.stopPropagation();
+	  });
+
+	  // If something upstream still blocks navigation, use this instead:
+	  // badge.addEventListener('click', (e) => {
+	  //   e.stopPropagation();
+	  //   e.preventDefault();
+	  //   window.open(href, "_blank", "noopener,noreferrer");
+	  // });
+	}
 
     const cbtn = document.createElement('button');
     cbtn.type = 'button';
@@ -800,41 +866,28 @@ function setReferences(refs) {
     right.appendChild(badge);
     right.appendChild(cbtn);
 
-    header.appendChild(titleEl);
     header.appendChild(right);
 
     const snippetEl = document.createElement('div');
-	snippetEl.className = 'ref-snippet';
+    snippetEl.className = 'ref-snippet';
 
-	// Prefer server-rendered HTML, fall back to plain snippet/text
-	const html = ref.snippet_html || ref.snippet || ref.text || '';
-	snippetEl.innerHTML = html;
+    // Prefer server-rendered HTML, fall back to plain snippet/text
     const raw = (ref.snippet ?? ref.text ?? ref.content ?? '');
-	const html1 = linkifyPlainUrls(raw);
-	const html2 = sanitizeBasicHtml(html1);
+    const html1 = linkifyPlainUrls(raw);
+    const html2 = sanitizeBasicHtml(html1);
 
-	snippetEl.innerHTML = html2;
+    snippetEl.innerHTML = html2;
 
-	// limit to 500 words displayed
-	truncateElementToWords(snippetEl, 500);
-
+    // limit to 500 words displayed
+    truncateElementToWords(snippetEl, 500);
 
     card.appendChild(header);
     card.appendChild(snippetEl);
 
-    if (ref.url) {
-      const link = document.createElement('a');
-      link.className = 'ref-link';
-      link.href = ref.url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = 'Open source';
-      card.appendChild(link);
-    }
-
     els.referencesContainer.appendChild(card);
   });
 }
+
 
 /* =========================================================
    12) CONVERSATION HISTORY (client-side)
@@ -1225,15 +1278,33 @@ async function handleChatSubmit(e) {
    17) ABOUT MODAL and PING TEST
    ========================================================= */
 function initAboutModal() {
-  if (!els.aboutBtn) return;
-  els.aboutBtn.addEventListener('click', async () => {
-    await modalAlert({
-      title: 'About Seeds of Truth',
-      message:
-        'Seeds of Truth is an AI research chat for open testing. Responses may be inaccurate. ' +
-        'Please verify important information. Your feedback helps improve quality.',
-      okText: 'Close'
-    });
+  const btn = document.getElementById("about-btn");
+  const overlay = document.getElementById("about-overlay");
+  const closeBtn = document.getElementById("about-close");
+
+  if (!btn || !overlay || !closeBtn) return;
+
+  function open() {
+    overlay.classList.add("show");
+    overlay.setAttribute("aria-hidden", "false");
+  }
+
+  function close() {
+    overlay.classList.remove("show");
+    overlay.setAttribute("aria-hidden", "true");
+  }
+
+  btn.addEventListener("click", open);
+  closeBtn.addEventListener("click", close);
+
+  // click outside
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+
+  // escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.classList.contains("show")) close();
   });
 }
 
@@ -1286,14 +1357,21 @@ function initAutosizeTextarea() {
 
 /* =========================================================
    19) LOCK UI
-   ========================================================= */
+   ========================================================= */ 
+
 function closeLockModal() {
   const lockModal = document.getElementById("lock-modal");
+  const lockPass  = document.getElementById("lock-pass");
+  const lockMsg   = document.getElementById("lock-msg");
+
   if (!lockModal) return;
 
   lockModal.classList.remove("open");
   lockModal.setAttribute("aria-hidden", "true");
-}   
+
+  if (lockMsg) lockMsg.textContent = "";
+  if (lockPass) lockPass.value = "";
+}
    
 function setModeAccess(unlocked) {
   isUnlocked = !!unlocked;
@@ -1309,23 +1387,20 @@ function setModeAccess(unlocked) {
   if (!isUnlocked) toolState.mode = "search";
   if (!isUnlocked && modeSearch) modeSearch.checked = true;
 
-  // visual + interaction state
   if (lockBtnEl) {
     lockBtnEl.classList.toggle("unlocked", isUnlocked);
     lockBtnEl.disabled = isUnlocked;
     lockBtnEl.setAttribute(
       "aria-label",
-      isUnlocked ? "Access granted" : "Restricted access"
+      isUnlocked ? "Access granted. Connecting..." : "Restricted access"
     );
-  }
-
-  // ✅ CLOSE MODAL WHEN ACCESS IS GRANTED
-  if (isUnlocked) {
-    closeLockModal();
   }
 
   renderToolState();
   saveToolState();
+
+  // close after any re-render, using global re-querying closer
+  if (isUnlocked) closeLockModal();
 }
 
 function initLockUI() {
@@ -1345,10 +1420,6 @@ function initLockUI() {
     lockPass.value = "";
     setTimeout(() => lockPass.focus(), 0);
   }
-  function closeLockModal() {
-    lockModal.classList.remove("open");
-    lockModal.setAttribute("aria-hidden", "true");
-  }
 
   async function tryUnlock() {
     const pw = (lockPass.value || "").trim();
@@ -1362,15 +1433,13 @@ function initLockUI() {
       const data = await apiUnlock(pw);
       const unlocked = !!(data && data.unlocked === true);
 
-      if (unlocked) {
-        setModeAccess(true);
-        lockMsg.textContent = "";
-        lockPass.value = "";
-        closeLockModal();
-      } else {
-        setModeAccess(false);
-        lockMsg.textContent = (data && (data.message || data.error)) || "Incorrect password";
-      }
+	  if (unlocked) {
+	    setModeAccess(true);
+	  } else {
+	    setModeAccess(false);
+	    lockMsg.textContent = (data && (data.message || data.error)) || "Incorrect password";
+	  }
+
     } catch (err) {
       setModeAccess(false);
       lockMsg.textContent = err?.message || "Not today";
@@ -1380,17 +1449,20 @@ function initLockUI() {
     }
   }
 
-
-
   lockBtn.addEventListener("click", openLockModal);
   lockClose.addEventListener("click", closeLockModal);
   lockModal.addEventListener("click", (e) => { if (e.target === lockModal) closeLockModal(); });
   lockEnter.addEventListener("click", tryUnlock);
+
   lockPass.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") tryUnlock();
+    if (e.key === "Enter") {
+      e.preventDefault();      // prevents newline / implicit form submit
+      tryUnlock();
+    }
     if (e.key === "Escape") closeLockModal();
   });
 }
+
 
 /* =========================================================
    20) STATUS + QUEUE POLLING
@@ -1653,4 +1725,3 @@ document.addEventListener('DOMContentLoaded', init);
     spawn(e.clientX, e.clientY);
   }, { passive: true });
 })();
-
