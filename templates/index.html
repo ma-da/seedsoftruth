@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#020617" />
   <title>Seeds of Truth AI</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Stack+Sans+Notch:wght@400;600;700;800&display=swap" rel="stylesheet">
 
   <!-- External CSS -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=4">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=5">
 
 </head>
 
@@ -32,9 +36,11 @@
         <!-- Brand -->
         <div class="brand">
           <div class="brand-icon" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6">
-              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="24">🌱</text>
-            </svg>
+			<img
+			  src="{{ url_for('static', filename='img/logo512.png') }}"
+			  alt=""
+			  class="brand-logo"
+			/>
           </div>
           <div>
             <button type="button" class="brand-title brand-title-btn" id="about-btn">
@@ -99,7 +105,9 @@
       <!-- Footer -->
       <div class="sidebar-footer">
         <div class="sidebar-user">
-          <div class="sidebar-avatar" aria-hidden="true">S</div>
+          <div class="sidebar-avatar" aria-hidden="true">
+		    <img src="{{ url_for('static', filename='img/logo512.png') }}" alt="" class="sidebar-avatar-img"/>
+		  </div>
           <div>
             <div class="sidebar-user-name">Seeds of Truth</div>
             <div class="sidebar-user-sub">
@@ -139,9 +147,11 @@
         <div class="chat-inner">
           <div class="welcome" id="welcome-message">
             <div class="welcome-icon" aria-hidden="true">
-              <svg width="48" height="48" viewBox="0 0 24 24">
-                <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="24">🌱</text>
-              </svg>
+			<img
+			  src="{{ url_for('static', filename='img/logo512.png') }}"
+			  alt=""
+			  class="welcome-logo"
+			/>
             </div>
 
             <div class="welcome-title">Seeds of Truth</div>
@@ -438,7 +448,39 @@
 		/>
 	  </filter>
 	</svg>
+	
+	<!-- About Modal -->
+	<div class="about-overlay" id="about-overlay" aria-hidden="true">
+	  <div class="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
+		<button type="button" class="about-close" id="about-close" aria-label="Close">×</button>
 
+		<div class="about-grid">
+		  <!-- Left (40%) -->
+		  <div class="about-left">
+			<img
+			  src="/static/img/logo512.png"
+			  alt="Seeds of Truth"
+			  class="about-image"
+			/>
+		  </div>
+
+		  <!-- Right (60%) -->
+		  <div class="about-right">
+			<h2 class="about-title" id="about-title">Seeds of Truth AI</h2>
+
+			<div class="about-body">
+			<p>Major events have shown us time and time again that we're not getting the full truth from the official story. Seeds of Truth (SoT) is a censorship-resistant AI built for <span id="violet-highlight">conscious, self-directed learning</span> in a media landscape shaped by special interests, manipulative algorithms, and institutional guardrails.</p>
+
+			<p>SoT is trained on millions of suppressed, overlooked, and hard-to-find documents with sources always provided. It offers a trustworthy space for disillusioned people across the political spectrum — researchers, journalists, independent thinkers, and everyday truth-seekers — to <span id="violet-highlight">develop their own worldview, one capable of holding complexity, nuance, and multiple truths at once</span> to make sense of this dynamic moment in human history.</p>
+
+			<p>Everywhere you look, media narratives and even progressive, alternative social movements are saturated with doom and gloom, divisive, and problem-focused perspectives. SoT helps people explore <span id="violet-highlight">what's possible beyond fear</span> with the best research and real-world examples into game-changing solutions, breakthrough ideas, emerging alternatives, and stories of healing and societal transformation.</p>
+
+			<p>We're here to inspire the <span id="violet-highlight">transformation and healing of our world</span> by offering the kind of information that empowers this shift.</p>
+			</div>
+		  </div>
+		</div>
+	  </div>
+	</div>
 
   <!-- External JS -->
   <script src="{{ url_for('static', filename='app.js') }}?v=2" defer></script>
