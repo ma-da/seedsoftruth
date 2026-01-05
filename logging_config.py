@@ -1,11 +1,23 @@
 # logging_config.py
 import logging
 import sys
+from pathlib import Path
 
+LOG_PATH = Path("logs/log.db")
 _setup_logging_done = False
 
 def setup_logging(level=logging.INFO):
     global _setup_logging_done
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        logging.critical(f"No permission to create logs directory: {LOG_PATH.parent}")
+        raise
+
+    handlers = [
+        logging.FileHandler(LOG_PATH),
+        logging.StreamHandler(sys.stdout),
+    ]
 
     logging.basicConfig(
         level=level,
@@ -14,9 +26,7 @@ def setup_logging(level=logging.INFO):
             "%(name)s | %(message)s"
         ),
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ],
+        handlers=handlers,
     )
 
     # Reduce noise from libraries

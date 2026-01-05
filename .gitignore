@@ -1,4 +1,5 @@
 db
+logs
 test.log
 cookies.txt
 .*.swp
