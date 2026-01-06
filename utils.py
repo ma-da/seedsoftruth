@@ -84,3 +84,60 @@ class SimpleUserRateLimiter:
             assert curr_time >= last_time  # if not true, then its nonsensical
             diff = curr_time - last_time
             return diff >= self.interval_secs
+
+
+def get_payload_str(payload, key, default=""):
+    """
+    Helper for reading a string field from a requests payload
+    """
+    val = payload.get(key)
+    return val.strip() if isinstance(val, str) else default
+
+
+def get_payload_int(payload, key, default=0):
+    """
+    Helper for reading an int field from a requests payload
+    """
+    val = payload.get(key)
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str):
+        try:
+            return int(val)
+        except ValueError:
+            return default
+    return default
+
+
+def get_payload_float(payload, key, default=0.0):
+    """
+    Helper for reading a float field from a requests payload
+    """
+    val = payload.get(key)
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            return default
+    return default
+
+
+def get_payload_bool(payload, key, default=False):
+    """
+    Helper for reading a bool field from a requests payload
+    """
+    val = payload.get(key)
+
+    if isinstance(val, bool):
+        return val
+
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off"):
+            return False
+
+    return default

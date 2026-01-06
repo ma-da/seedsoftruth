@@ -748,6 +748,48 @@ MODEL_CHECK_TIMEOUT_SECS = 5
 
 @app.route("/api/feedback", methods=["POST", "GET"])
 def api_feedback():
+    global rate_limiter
+
+    locked = _require_unlocked()
+    if locked:
+        return locked
+
+    payload = request.get_json(silent=True) or {}
+    job_id = utils.get_payload_str(payload, "job_id", None)
+    if not job_id or len(job_id) == 0:
+        app_logger.warning("Feedback request failed due to bad job_id param")
+        return jsonify({"ok": False, "error": "Field 'job_id' must be a non-empty string"}), 400
+
+    relevance = utils.get_payload_int(payload, "relevance", None)
+    if not relevance:
+        app_logger.warning("Feedback request failed due to bad relevance param")
+        return jsonify({"ok": False, "error": "Field 'relevance' must be integer"}), 400
+
+    accuracy = utils.get_payload_int(payload, "accuracy", None)
+    if not accuracy:
+        app_logger.warning("Feedback request failed due to bad accuracy param")
+        return jsonify({"ok": False, "error": "Field 'accuracy' must be integer"}), 400
+
+    style = utils.get_payload_int(payload, "style", None)
+    if not style:
+        app_logger.warning("Feedback request failed due to bad style param")
+        return jsonify({"ok": False, "error": "Field 'style' must be integer"}), 400
+
+    comments = utils.get_payload_str(payload, "comments", "")
+
+    # job id should exist in jobs table
+    if not db.job_exists(job_id):
+        app_logger.warning(f"Feedback request failed due to non-existent job_id: {job_id}")
+        return jsonify({"ok": False, "error": "job_id was invalid"}), 400
+
+    try:
+        app_logger.info(f"Feedback request received: job_id '{job_id}', relevance {relevance}, accuracy {accuracy}, style {style}, comments '{comments}' ")
+        db.insert_feedback(job_id, relevance, accuracy, style, comments)
+        app_logger.info("Feedback was successfully saved")
+    except Exception as e:
+        app_logger.error(f"insert feedback failed: {e}")
+        return jsonify({"ok": False, "error": "feedback write failed", "detail": str(e)}), 500
+
     return jsonify({"ok": True, "status": "feedback was successful"}), 200
 
 
