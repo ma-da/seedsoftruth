@@ -41,7 +41,10 @@ const CFG = {
     STATUS: '/api/status',
     QUEUE: '/api/queue',
     PING: '/api/ping'
-  }
+  },
+
+  // Error codes
+  JOB_ID_NONE: "none",
 };
 
 /* =========================================================
@@ -407,6 +410,7 @@ function openFeedbackModal(target) {
 
   if (els.fbFieldAccuracy) els.fbFieldAccuracy.style.display = isRef ? 'none' : '';
   if (els.fbFieldStyle) els.fbFieldStyle.style.display = isRef ? 'none' : '';
+  if (els.fbJobId) els.fbJobId.value = target?.job_id;
 
   const label = isRef ? 'Reference' : 'Response';
   const snip = (target?.snippet || '').trim().replace(/\s+/g, ' ');
@@ -443,6 +447,8 @@ async function submitFeedback() {
   const relevance = clamp1to10(els.fbRelevance.value);
   const accuracy = isRef ? undefined : clamp1to10(els.fbAccuracy.value);
   const style = isRef ? undefined : clamp1to10(els.fbStyle.value);
+  const comments = (els.fbComments.value || '').trim();
+  const job_id = (els.fbJobId?.value ?? '').trim();
 
   const payload = {
     target: {
@@ -454,7 +460,7 @@ async function submitFeedback() {
       relevance,
       ...(isRef ? {} : { accuracy, style })
     },
-    comments: (els.fbComments.value || '').trim(),
+    comments,
     createdAt: Date.now()
   };
 
@@ -467,12 +473,56 @@ async function submitFeedback() {
     return;
   }
 
-  // Keep local for now
+  // save feedback locally
   saveFeedbackLocally(payload);
+
+  // send feedback only if unlocked and using chat mode
+  // fyi we need a valid job id in order to send a feedback request to the server
+  if (isUnlocked && (toolState.mode === 'chat' || toolState.mode === 'ab') && job_id != CFG.JOB_ID_NONE) {
+    await sendFeedback(
+        job_id,
+        relevance,
+        accuracy,
+        style,
+        comments
+    )
+  }
 
   closeFeedbackModal();
   showToast();
 }
+
+async function sendFeedback(
+  job_id,
+  relevance,
+  accuracy,
+  style,
+  comments = ""
+) {
+  const res = await fetch(CFG.API.FEEDBACK, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      job_id,
+      relevance,
+      accuracy,
+      style,
+      comments
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    const errorMsg = "send feedback back failed: " + (data?.error || "request failed");
+    pushStatusMessage(errorMsg);
+  }
+
+  return data;
+}
+
 
 function initFeedbackModal() {
   if (els.fbClose) els.fbClose.addEventListener('click', closeFeedbackModal);
@@ -503,7 +553,7 @@ function setBotAvatar(el) {
   `;
 }
 
-function appendMessage(text, role) {
+function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
   const row = document.createElement('div');
   row.className = 'message-row ' + (role === 'bot' ? 'bot' : 'user');
 
@@ -550,9 +600,10 @@ function appendMessage(text, role) {
         <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
       </svg>
     `;
+
     commentBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      openFeedbackModal({ type: 'response', id: msgId, snippet: text });
+      openFeedbackModal({ type: 'response', id: msgId, snippet: text, job_id });
     });
 
     actions.appendChild(commentBtn);
@@ -626,7 +677,7 @@ function appendABMessage(aText, bText, meta = {}) {
     `;
     commentBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      openFeedbackModal({ type: 'response', id, snippet: `[A/B ${variant}] ${text}` });
+      openFeedbackModal({ type: 'response', id, snippet: `[A/B ${variant}] ${text}`, job_id: "none" });
     });
 
     actions.appendChild(commentBtn);
@@ -859,7 +910,8 @@ function setReferences(refs) {
       openFeedbackModal({
         type: 'reference',
         id: refId,
-        snippet: (ref.title ? ref.title + ' — ' : '') + (ref.snippet || '')
+        snippet: (ref.title ? ref.title + ' — ' : '') + (ref.snippet || ''),
+        job_id: "none"
       });
     });
 
@@ -1131,8 +1183,6 @@ async function apiSearch(payload) {
   return data;
 }
 
-
-
 async function apiChat(payload) {
   return apiPost(CFG.API.CHAT, payload);
 }
@@ -1154,7 +1204,11 @@ async function apiStatus() {
 }
 
 async function apiQueue() {
-  return apiGet(CFG.API.QUEUE);
+  return apiPost(CFG.API.QUEUE, {});
+}
+
+async function apiFeedback() {
+  return apiGet(CFG.API.FEEDBACK);
 }
 
 /* =========================================================
@@ -1252,8 +1306,11 @@ async function handleChatSubmit(e) {
 
     // chat
     const data = await apiChat(payload);  // payload already has user_id
+
     const reply = data.reply || data.message || data.status || '';
-    appendMessage(reply || '(no reply)', 'bot');
+    const job_id = data.job_id || CFG.JOB_ID_NONE;
+
+    appendMessage(reply || '(no reply)', 'bot', job_id);
     pushTurn(text, reply || '(no reply)');
     setReferences(Array.isArray(data.references) ? data.references : []);
 
@@ -1263,12 +1320,12 @@ async function handleChatSubmit(e) {
       toolState.mode = 'search';
       renderToolState();
       saveToolState();
-      appendMessage('Not today. Search mode only.', 'bot');
+      appendMessage('Not today. Search mode only.', 'bot', CFG.JOB_ID_NONE);
       pushTurn(text, 'Not today. Search mode only.');
       return;
     }
 
-    appendMessage('Error contacting server. Please try again.', 'bot');
+    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
     pushStatusMessage(String(err?.message || err));
   }
 }
@@ -1569,6 +1626,7 @@ function initDom() {
   els.fbToast = document.getElementById('fb-toast');
   els.fbFieldAccuracy = document.getElementById('fb-field-accuracy');
   els.fbFieldStyle = document.getElementById('fb-field-style');
+  els.fbJobId = document.getElementById('fb-job-id')
 
   // custom modal
   els.modalOverlay = document.getElementById('modal-overlay');

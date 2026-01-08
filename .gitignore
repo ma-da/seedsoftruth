@@ -6,3 +6,5 @@ cookies.txt
 .idea/
 __pycache__/
 ._*.py
+._*.js
+._*.html

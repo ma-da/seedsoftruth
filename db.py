@@ -244,7 +244,6 @@ def delete_job(job_id: str, user_id: str):
         """, (job_id, user_id))
 
 def insert_feedback(
-    conn: sqlite3.Connection,
     job_id: str,
     relevance: int,
     accuracy: int,

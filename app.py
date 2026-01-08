@@ -627,6 +627,7 @@ def api_chat():
     else:
         app_logger.info("Rate limiting check passed")
 
+    job_id = "none"
     try:
         app_logger.info(f"Inserting new job for user_id {user_id} into db...")
         job_id = db.insert_job(user_id, msg)
@@ -637,7 +638,7 @@ def api_chat():
         return jsonify({
             "ok": False,
             "error": "Could not insert job to database",
-            "job_id": "none",
+            "job_id": job_id,
             "user_id": user_id,
             "detail": ""
         }), 500
@@ -698,7 +699,7 @@ def api_chat():
             "detail": str(e)
         }), 500
 
-    app_logger.info("chat operation was completed successfully")
+    app_logger.info(f"chat operation was completed successfully, job_id {job_id}.")
     return jsonify({
         "ok": True,
         "reply": answer,
