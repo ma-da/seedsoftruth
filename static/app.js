@@ -620,7 +620,7 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
 }
 
 // A/B mode: side-by-side answers with selectable choice + feedback
-function appendABMessage(aText, bText, meta = {}) {
+function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   const row = document.createElement('div');
   row.className = 'message-row bot';
 
@@ -647,7 +647,7 @@ function appendABMessage(aText, bText, meta = {}) {
     if (btn) btn.innerHTML = '✓ Selected';
   }
 
-  function makePanel(label, text, variant) {
+  function makePanel(label, text, variant, job_id) {
     const panel = document.createElement('div');
     panel.className = 'ab-panel';
 
@@ -677,7 +677,7 @@ function appendABMessage(aText, bText, meta = {}) {
     `;
     commentBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      openFeedbackModal({ type: 'response', id, snippet: `[A/B ${variant}] ${text}`, job_id: "none" });
+      openFeedbackModal({ type: 'response', id, snippet: `[A/B ${variant}] ${text}`, job_id });
     });
 
     actions.appendChild(commentBtn);
@@ -712,8 +712,8 @@ function appendABMessage(aText, bText, meta = {}) {
     return panel;
   }
 
-  wrap.appendChild(makePanel(meta.labelA || 'Response A', aText, 'A'));
-  wrap.appendChild(makePanel(meta.labelB || 'Response B', bText, 'B'));
+  wrap.appendChild(makePanel(meta.labelA || 'Response A', aText, 'A', job_id_a));
+  wrap.appendChild(makePanel(meta.labelB || 'Response B', bText, 'B', job_id_b));
 
   inner.appendChild(avatar);
   inner.appendChild(wrap);
@@ -1298,7 +1298,11 @@ async function handleChatSubmit(e) {
     if (toolState.mode === 'ab') {
       // payload already has user_id
       const data = await apiAB(payload);
-      appendABMessage(data.a || '', data.b || '', { labelA: data.labelA, labelB: data.labelB });
+      appendABMessage(data.a || '',
+                      data.b || '',
+                      data.job_id_a || CFG.JOB_ID_NONE,
+                      data.job_id_b || CFG.JOB_ID_NONE,
+                      { labelA: data.labelA, labelB: data.labelB });
       pushTurn(text, `Response A:\n${data.a || ''}\n\nResponse B:\n${data.b || ''}`);
       setReferences(Array.isArray(data.references) ? data.references : []);
       return;

@@ -585,6 +585,9 @@ def api_search():
 
 @app.post("/api/chat")
 def api_chat():
+    """
+    Implements normal chat mode
+    """
     global inflight_chat_reqs, rate_limiter
 
     locked = _require_unlocked()
@@ -714,6 +717,12 @@ def api_chat():
 
 @app.post("/api/ab")
 def api_ab():
+    """
+    Implements A vs. B comparison for the given loaded model
+    Does no queueing, returns with error if model not ready
+    """
+    global inflight_chat_reqs, rate_limiter
+
     locked = _require_unlocked()
     if locked:
         return locked
@@ -723,21 +732,110 @@ def api_ab():
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
 
+    user_id = payload.get("user_id", "none")
+    if not isinstance(user_id, str):
+        app_logger.warn("Chat request user_id was invalid")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' must be a string"
+        }), 400
+
+    # TODO: Enforce user_id must equal current or seen uuid or fail request.
+    user_id = user_id.strip()
+    if user_id == "none":
+        app_logger.warning("Chat request user_id cannot be none")
+        return jsonify({
+            "ok": False,
+            "error": "AB test failed. Field 'user_id' cannot be none or empty"
+        }), 400
+
+    # model must be ready for AB test
+    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    if not model_ready:
+        preview_msg = msg[:40]
+        app_logger.warning(f"Model is not ready. AB test unavailable for message '{preview_msg}...'")
+
+        # send wake-up request to model
+        _async_to_sync(rag_controller.send_warmup)()
+
+        return jsonify({
+            "ok": False,
+            "error": "Model not ready. AB test unavailable.",
+            "job_id": "none",
+            "user_id": user_id,
+            "detail": ""
+        }), 503
+    else:
+        app_logger.info("Model is ready for requests")
+
+    # rate limit check. blocks if user sending too frequently.
+    if not rate_limiter.check(user_id):
+        app_logger.warning("Chat request user_id was rate limited")
+        return jsonify({
+            "ok": False,
+            "error": "AB Chat request was rate limited. Please wait 30 seconds before resubmission."
+        }), 429
+    else:
+        app_logger.info("Rate limiting check passed")
+
+    inflight_chat_reqs.inc()
+    inflight_chat_reqs.inc()
+
+    # Get two job ids for use, fail if either one doesn't work
+    job_id_a = "none"
+    job_id_b = "none"
+    try:
+        app_logger.info(f"Inserting jobs for user_id {user_id} for AB testing into db...")
+        job_id_a = db.insert_job(user_id, msg)
+        job_id_b = db.insert_job(user_id, msg)
+        app_logger.info(f"Job write to db for AB testing was successful, job_id_a {job_id_a}, job_id_b {job_id_b}.")
+    except Exception as e:
+        app_logger.warning(f"AB test failed due to db job insert problem: {e}")
+
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
+        return jsonify({
+            "ok": False,
+            "error": "Could not insert job to database",
+            "user_id": user_id,
+            "detail": ""
+        }), 500
+
     # Simple dev A/B: ask twice with slightly different prompts.
     # Replace later with true multi-model or different temperatures.
     try:
         a = ask_corpus(msg)
         b = ask_corpus(msg + "\n\n(Provide an alternate phrasing / approach.)")
+
+        app_logger.info(f"Marking job {job_id_a} as done in db...")
+        db.mark_done(job_id_a, a)
+        app_logger.info(f"Marking job {job_id_b} as done in db...")
+        db.mark_done(job_id_b, a)
+
+        app_logger.info(f"AB test done")
     except RuntimeError as e:
+        app_logger.exception("AB failed")
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
         return jsonify({"ok": False, "error": "Search system not initialized", "detail": str(e)}), 503
     except Exception as e:
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
         app_logger.exception("AB failed")
         return jsonify({"ok": False, "error": "AB failed", "detail": str(e)}), 500
+
+    inflight_chat_reqs.dec()
+    inflight_chat_reqs.dec()
 
     return jsonify({
         "ok": True,
         "a": a,
         "b": b,
+        "job_id_a": job_id_a,
+        "job_id_b": job_id_b,
         "references": [],
     }), 200
 
