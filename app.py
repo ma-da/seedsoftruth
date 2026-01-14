@@ -661,7 +661,7 @@ def api_chat():
             "job_id": job_id,
             "user_id": user_id,
             "detail": ""
-        }), 200
+        }), 503
     else:
         app_logger.info("Model is ready for requests")
 
@@ -915,7 +915,7 @@ def api_status():
     }), 200
 
 
-# TODO: The below may not be accurate for queries that are purely in-flight and not stored in the queue.
+# TODO: The queries_in_line may not be accurate for queries that are purely in-flight and not stored in the queue.
 @app.post("/api/queue")
 def api_queue():
     """
@@ -966,7 +966,7 @@ def api_queue():
                 "server_time": time.time()
             }), 200
         else:
-            app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general.")
+            app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
 
 
     # This is the general view for those that aren't logged in.

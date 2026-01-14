@@ -47,6 +47,8 @@ const CFG = {
   JOB_ID_NONE: "none",
 };
 
+const NOT_READY_MSG = 'Model not ready. Message queued for processing.'
+
 /* =========================================================
    1) DOM LOOKUPS (set in init)
    ========================================================= */
@@ -571,6 +573,9 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
   const textEl = document.createElement('div');
   textEl.className = 'message-text';
   textEl.textContent = text;
+
+  // attach job_id
+  textEl.dataset.jobId = job_id;
 
   inner.appendChild(avatar);
 
@@ -1127,6 +1132,8 @@ async function clearCurrentChat() {
    15) FLASK API HELPERS (session cookie enabled)
    ========================================================= */
 async function apiPost(url, payload) {
+  //console.log("API POST to url: " + url)
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1137,11 +1144,17 @@ async function apiPost(url, payload) {
   let data = {};
   try { data = await res.json(); } catch (_) {}
 
+  //console.log("GOT res")
+
   if (!res.ok) {
     const msg = data?.message || data?.error || `Request failed (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
     err.data = data;
+
+    // add job id to error for processing if present
+    err.job_id = data?.job_id ?? null;
+
     throw err;
   }
   return data;
@@ -1204,7 +1217,11 @@ async function apiStatus() {
 }
 
 async function apiQueue() {
-  return apiPost(CFG.API.QUEUE, {});
+  const user_id = getUserId();
+  const payload = {
+    user_id
+  }
+  return apiPost(CFG.API.QUEUE, payload);
 }
 
 async function apiFeedback() {
@@ -1319,6 +1336,21 @@ async function handleChatSubmit(e) {
     setReferences(Array.isArray(data.references) ? data.references : []);
 
   } catch (err) {
+    // process queued up message
+    //if ((err.status) == 503 && err.error.includes('queued')) {
+    if (err.status == 503) {
+        const job_id = err.job_id ?? null;
+        if (job_id) {
+            console.log("Chat message was queued with job_id: " + job_id)
+        } else {
+            console.log("Chat queued message had no job_id was present. could not process message.")
+        }
+
+        appendMessage(NOT_READY_MSG, 'bot', job_id);
+        pushStatusMessage(NOT_READY_MSG);
+        return;
+    }
+
     if (err?.status === 403) {
       setModeAccess(false);
       toolState.mode = 'search';
@@ -1334,6 +1366,19 @@ async function handleChatSubmit(e) {
   }
 }
 
+function updateMessageByJobId(job_id, newText) {
+  const el = document.querySelector(
+    `.message-text[data-job-id="${job_id}"]`
+  );
+  if (!el) return;
+  el.textContent = newText;
+  pushStatusMessage(" ");
+}
+
+function processQueuedMsg(job_id, update_text) {
+    console.log("queued_msg: " + job_id)
+    updateMessageByJobId(job_id, update_text)
+}
 
 /* =========================================================
    17) ABOUT MODAL and PING TEST
@@ -1548,6 +1593,30 @@ async function refreshQueueOnce() {
     // expected: { ok:true, queries_in_line: N } or similar
     const q = data?.queries_in_line ?? data?.queue ?? 0;
     setQueueStatus(q);
+
+    // queue resp message may contain the results of delayed chat messages
+    let delayed_resp = null;
+    const raw = data?.outgoing_resp;
+
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (trimmed) {
+        try {
+          console.log("found outgoing queue resp. parsing...")
+          delayed_resp = JSON.parse(trimmed);
+        } catch (e) {
+          console.error("Failed to parse outgoing_resp", e, trimmed);
+        }
+      }
+    } else if (raw && typeof raw === "object") {
+      delayed_resp = raw;
+    }
+
+    if (delayed_resp) {
+        console.log("refreshQueueOnce Got related resp: " + delayed_resp)
+        processQueuedMsg(delayed_resp.job_id, delayed_resp.reply)
+    }
+
   } catch (_) {
     setQueueStatus(0);
   }
