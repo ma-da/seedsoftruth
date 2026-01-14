@@ -198,8 +198,8 @@ body.light .brand-subtitle{ color: var(--muted-light); }
   top: 12px;
   right: 12px;
   z-index: 9999;
-  width: 36px;
-  height: 36px;
+  width: 72px;
+  height: 72px;
   border-radius: 999px;
   border: none;
   cursor: pointer;
@@ -208,7 +208,13 @@ body.light .brand-subtitle{ color: var(--muted-light); }
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 10px;
 }
+.lock-btn svg {
+  width: 64px;   /* 18px × 3 */
+  height: 64px;
+}
+
 body.light .lock-btn{
   background: #fff;
   color: var(--accent);
@@ -328,6 +334,14 @@ body.light .pill-button{
 .recent-item:hover{ background: rgba(148,163,184,0.12); }
 body.light .recent-item{ color: var(--muted-light); }
 body.light .recent-item:hover{ background: rgba(148,163,184,0.18); }
+
+.sidebar a {
+  color: black;
+}
+
+.sidebar a:hover {
+  color: var(--viola);
+}
 
 /* Pin the sidebar itself so it doesn't scroll with the page */
 #sidebar.sidebar{
@@ -608,7 +622,7 @@ body.light .status-message.muted{ color: var(--muted-light); }
 
 /* Welcome */
 .welcome{
-  text-align: center;
+  text-align: center;	
   padding: 60px 12px;
 }
 
@@ -646,6 +660,7 @@ body.light .welcome-icon{
 
 .welcome-sub{
   font-size: 14px;
+  text-align: left;
   max-width: 460px;
   margin: 0 auto;
   color: var(--muted-dark);
@@ -1068,16 +1083,70 @@ body.light .chat-input{
 }
 body.light .input-note{ color: var(--muted-light); }
 
-.note-text{
-  flex: 1;
-  text-align: center;
+/* --- Status-enhanced note text (additive, non-breaking) --- */
+
+.note-text {
+  display: inline-flex;          /* replaces implicit inline text flow */
+  align-items: center;
+  justify-content: center;       /* preserves centered appearance */
+  gap: 8px;                      /* space between spinner + text */
 }
+
+/* Spinner (hidden by default) */
+.note-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0;
+  flex: 0 0 auto;                /* never stretch */
+  animation: sot-spin 0.8s linear infinite;
+  transition: opacity 120ms ease;
+}
+
+/* Show spinner only when busy */
+.note-text.is-busy .note-spinner {
+  opacity: 0.9;
+}
+
+/* Text wrapper (no visual change) */
+.note-message {
+  white-space: nowrap;           /* prevents reflow jitter */
+}
+
+/* Spinner animation */
+@keyframes sot-spin {
+  to { transform: rotate(360deg); }
+}
+
 
 .note-actions{
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
+
+/* Blinking typing cursor inside bot message */
+.typing-cursor{
+  display:inline-block;
+  width:0.6ch;
+  margin-left:2px;
+  animation:sot-blink 1s steps(1,end) infinite;
+  opacity:1;
+  transform: translateY(1px);
+}
+
+@keyframes sot-blink{
+  50%{ opacity:0; }
+}
+
+/* Optional: smoother mono-ish feel for streaming */
+.msg-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 
 /* ==========================================================================
    9) TOOLS POPUP

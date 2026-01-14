@@ -67,7 +67,7 @@
       <div class="sidebar-scroll">
         <!-- Status -->
         <div>
-          <div class="sidebar-section-title">Status: Not connected yet</div>
+          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-qwen3-beta-slim-merged-v4-A" target="_blank">Model v4a</a>, <a href="https://freemindgazette.substack.com/p/planting-seeds-of-truth" target="_blank">Beta Slim dataset</a></div> 
 
           <div class="status-panel">
             <div class="status-row">
@@ -83,12 +83,7 @@
               Estimated wait time is <b id="queue-eta">0s</b>.
             </div>
 
-            <div class="status-messages">
-              <div class="status-messages-title">Updates</div>
-              <div class="status-messages-list" id="status-messages">
-                <div class="status-message muted">No status messages yet.</div>
-              </div>
-            </div>
+
           </div>
         </div>
 		<!-- Ping test -->
@@ -157,7 +152,9 @@
             <div class="welcome-title">Seeds of Truth</div>
 
             <div class="welcome-sub">
-              Google search is censored. So is social media. Most popular AIs are censored too. Seeds of Truth is an uncensored AI trained on millions of suppressed documents. References provided.
+              <ol><li>Click the lock icon at top right and enter your password</li>
+			  <li>Select mode by clicking on the plus sign in chat area</li>
+			  <li>Submit feedback about any answer/reference by clicking on the top right of any message area</li></ol>
             </div>
           </div>
 
@@ -239,9 +236,12 @@
 			<!-- Input note + actions -->
 			<div class="input-note">
 
-			  <span class="note-text">
+			<span class="note-text" id="note-text" role="status" aria-live="polite">
+			  <span class="note-spinner" id="note-spinner" aria-hidden="true"></span>
+			  <span class="note-message" id="note-message">
 				Seeds of Truth AI can make mistakes. Please verify important information.
 			  </span>
+			</span>
 
 			  <span class="note-actions">
 				<!-- Save -->
@@ -405,13 +405,14 @@
   </button>
 
 	<button id="lock-btn" class="lock-btn" type="button" aria-label="Unlock">
-	  <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+	  <svg viewBox="0 0 24 24" fill="none"
 		   stroke="currentColor" stroke-width="2.2"
 		   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 		<rect x="3" y="11" width="18" height="11" rx="2"></rect>
 		<path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
 	  </svg>
 	</button>
+
 
 	<div id="lock-modal" class="lock-modal" aria-hidden="true">
 	  <div class="lock-card" role="dialog" aria-modal="true" aria-label="Password">

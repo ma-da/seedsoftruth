@@ -8,8 +8,6 @@ Key changes vs original:
 - Consistent error handling
 - Async used only for I/O
 
-This keeps your logic and assumptions intact, but makes the system testable,
-composable, and much easier to reason about.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ import logging_config
 HIVE_RPC = "https://api.hive.blog"
 AUTHOR = "wanttoknow"
 PERMLINK = "seeds-of-truth-index-registration-0-1"
-FLASK_PROXY_URL = "https://fixingbrokenrobots.pythonanywhere.com/chat"
 MAX_QUESTION_WORDS = 400
 TOP_DOCS = 5
 
@@ -181,22 +178,102 @@ def truncate_question(q: str) -> tuple[str, bool]:
 # --- JS-parity tokenization helpers ---
 _STRIP_PHRASES_RE = re.compile(r"(click here|more along these lines|about us)", re.IGNORECASE)
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-_WORD_RE = re.compile(r"\b\w+\b", re.UNICODE)
 
 def _strip_phrases(s: str) -> str:
-    return _STRIP_PHRASES_RE.sub(" ", s or "")
+    """JS parity with stripPhrases(): replace known boilerplate phrases with spaces."""
+    if not s:
+        return ""
+    return _STRIP_PHRASES_RE.sub(" ", str(s))
+
+# ----------------------------
+# JS-parity query preprocessing
+# ----------------------------
+
+# JS uses: t.match(/\b\w{2,}\b/g) || [];
+_WORD_RE = re.compile(r"\b\w{2,}\b", re.UNICODE)
+
+# Same stop markers your JS filters for (plus generic </s:...> etc)
+_STOP_MARKERS = ["</s>", "<|end|>", "<|eot_id|>"]
+
+def _strip_on_literal_stops(text: str, stops=None) -> str:
+    """
+    Mirrors JS stripOnLiteralStops(): split once on first stop token,
+    allowing optional whitespace/quotes around the token.
+    Also handles '</s:1>' style by treating any '</s' as a stop.
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # Treat any '</s' prefix as a stop (covers </s:1>, </s:2>, etc.)
+    # We'll include it as a regex alternative.
+    stops = list(stops or _STOP_MARKERS)
+
+    # Escape literal stops for regex
+    escaped = [re.escape(x) for x in stops]
+
+    # Add a generic '</s' stopper (covers '</s:1>' etc)
+    escaped.append(re.escape("</s"))
+
+    pattern = re.compile(
+        r'(?:\s|["\'])*(' + "|".join(escaped) + r')(?:\s|["\'])*',
+        flags=re.IGNORECASE
+    )
+
+    m = pattern.search(s)
+    if not m:
+        return s.rstrip()
+    return s[:m.start()].rstrip()
+
+def clean_retrieval_text(text: str) -> str:
+    """
+    Clean *retrieval* text (especially model outputs) so the TF-IDF vector
+    isn't dominated by generation scaffolding like '</s:1>Q:' blocks.
+    """
+    if not text:
+        return ""
+
+    s = str(text)
+
+    # 1) Cut off at stop tokens / '</s:1>' etc
+    s = _strip_on_literal_stops(s, _STOP_MARKERS)
+
+    # 2) Remove any remaining angle-bracket tags (defensive)
+    s = re.sub(r"<[^>]+>", " ", s)
+
+    # 3) Optional: if some models emit repeated "Q:" / "A:" blocks even before </s
+    # keep only the first "Note"/summary segment.
+    # (This is conservative: only trims if it's clearly a QA template.)
+    s = re.sub(r"\b(?:Q:\s*|A:\s*)", " ", s)
+
+    # 4) Your existing phrase stripping (keep your current behavior)
+    s = _strip_phrases(s)
+
+    # 5) Normalize whitespace/control chars like the JS pipeline
+    s = (
+        s.lower()
+         .replace("\x00", " ")
+    )
+    s = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
 
 def _tokenize_js_parity(text: str) -> List[str]:
     """
-    Matches the known-good JS tokenize():
-      strip phrases -> lowercase -> remove control chars -> normalize spaces
+    Parity with JS tokenize():
+      - strip phrases
+      - lowercase
+      - collapse whitespace / control chars
+      - tokens = \\b\\w{2,}\\b
     """
-    t = _strip_phrases(str(text or "")).lower()
-    t = _CTRL_RE.sub(" ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return _WORD_RE.findall(t) if t else []
+    t = clean_retrieval_text(text)
+    if not t:
+        return []
+    return _WORD_RE.findall(t)
 
 def build_query_vector(state: RetrievalState, query: str) -> Optional[np.ndarray]:
+    query = clean_retrieval_text(query)  # <-- IMPORTANT
     toks = [t for t in _tokenize_js_parity(query) if t not in state.stopwords]
     if not toks:
         return None
@@ -583,17 +660,6 @@ async def ask(state: "RetrievalState", question: str, *, context_k: int = 5, cen
 
 
 # ---- shard cache ----
-_SHARD_CACHE: Dict[str, Any] = {}
-
-async def fetch_json(url: str) -> Any:
-    if url in _SHARD_CACHE:
-        return _SHARD_CACHE[url]
-    loop = asyncio.get_running_loop()
-    r = await loop.run_in_executor(None, requests.get, url)
-    r.raise_for_status()
-    data = r.json()
-    _SHARD_CACHE[url] = data
-    return data
 
 def _sparse_dot(tfidf_pairs: List[List[Any]], qv: np.ndarray) -> float:
     """

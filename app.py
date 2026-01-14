@@ -246,7 +246,7 @@ def worker_body():
             db.mark_done(queued_job.job_id, answer)
 
         except RuntimeError as e:
-            app_logger.error("chat_with_corpus failed in worker with runtime error: {e}")
+            app_logger.error(f"chat_with_corpus failed in worker with runtime error: {e}")
 
             resp = rag_controller.QueuedResponse(
                 ok=False,
@@ -261,7 +261,7 @@ def worker_body():
             rag_controller.queue_outgoing(resp)
 
         except Exception as e:
-            app_logger.error("chat_with_corpus failed in worker with exception: {e}")
+            app_logger.error(f"chat_with_corpus failed in worker with exception: {e}")
 
             resp = rag_controller.QueuedResponse(
                 ok=False,
@@ -375,18 +375,15 @@ def ask_corpus(question: str) -> str:
     return (ans or "").strip()
 
 
-def chat_with_corpus(query: str, top_k: int = 10):
+def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20):
     """
     Returns (answer: str, docs: list[dict])
 
-    This bridges async rag_controller functions into sync Flask code.
-
-    Assumptions / compatibility:
-    - Preferred: rag_controller.ask(state, question, verbose=...) -> str
-      (ask does retrieval + context + LLM)
-    - Also tries to fetch docs for UI references via:
-        - rag_controller.search_references(state, query, top_k=...)
-          OR rag_controller.sparse_retrieve(state, query)
+    Retrieval behavior:
+      - Answer is generated from the *question* (rag_controller.ask does its own retrieval)
+      - References are fetched using:
+          retrieval_text = question + " " + answer   (chat mode parity goal)
+        so the TF-IDF query vector reflects both user intent and the model’s salient terms.
     """
     global retrieval_state
     if retrieval_state is None:
@@ -397,26 +394,47 @@ def chat_with_corpus(query: str, top_k: int = 10):
         return ("", [])
 
     async def _run():
-        # ---------- 1) Get answer from LLM ----------
+        # 1) LLM answer (rag_controller.ask does its own retrieval + context building)
         answer = await rag_controller.ask(retrieval_state, q, verbose=False)
+        answer = str(answer or "").strip()
 
-        # ---------- 2) Get docs for references ----------
-        # Prefer a dedicated search_references() if present, since it often returns richer metadata
+        # 2) Build retrieval text for references (query + answer)
+        #    Use rag_controller's cleaner to strip </s:1>Q: scaffolding etc.
+        retrieval_text = (q + " " + answer).strip()
+        try:
+            retrieval_text = rag_controller.clean_retrieval_text(retrieval_text)
+        except Exception:
+            # If you ever rename/move it, don't fail chat
+            pass
+
+        # Safety: keep retrieval text bounded (prevents huge TF maps / slow scoring)
+        # Tune as needed; ~800–1200 words is plenty for TF-IDF.
+        words = retrieval_text.split()
+        if len(words) > 900:
+            retrieval_text = " ".join(words[:900])
+            
+        # extra logging
+        app_logger.info("chat refs retrieval_text words=%d", len(retrieval_text.split()))        
+
+        # 3) Fetch reference docs using retrieval_text
+        pack = await rag_controller.search_references(
+            retrieval_state,
+            retrieval_text,
+            top_k=int(top_k),
+            centroid_k=int(shard_k),
+            verbose=False,
+        )
+
         docs = []
-        pack = await rag_controller.search_references(retrieval_state, q, top_k=top_k)
         if isinstance(pack, dict):
             docs = pack.get("results", []) or []
         elif isinstance(pack, list):
             docs = pack
 
-        # TODO: Old code. Remove when no longer needed.
-        # docs = await rag_controller.sparse_retrieve(retrieval_state, q)
-
-        # normalize output types
         if not isinstance(docs, list):
             docs = []
 
-        return (str(answer or "").strip(), docs[: max(0, int(top_k) or 0)])
+        return (answer, docs[: max(0, int(top_k) or 0)])
 
     return async_to_sync(_run)()
 
@@ -636,14 +654,13 @@ def api_chat():
         job_id = db.insert_job(user_id, msg)
         app_logger.info(f"Job write to db was successful, job_id {job_id}.")
     except Exception as e:
-        app_logger.warning(f"Chat failed due to db job insert problem: {e}")
-
+        app_logger.exception("DB insert failed")
         return jsonify({
             "ok": False,
             "error": "Could not insert job to database",
             "job_id": job_id,
             "user_id": user_id,
-            "detail": ""
+            "detail": str(e),
         }), 500
 
     model_ready = _async_to_sync(rag_controller.is_model_ready)()
@@ -679,7 +696,7 @@ def api_chat():
 
         inflight_chat_reqs.dec()
     except RuntimeError as e:
-        app_logger.error("chat_with_corpus failed: {e}")
+        app_logger.error(f"chat_with_corpus failed: {e}")
 
         inflight_chat_reqs.dec()
         return jsonify({
@@ -690,7 +707,7 @@ def api_chat():
             "detail": str(e)
         }), 503
     except Exception as e:
-        app_logger.error("chat_with_corpus failed: {e}")
+        app_logger.error(f"chat_with_corpus failed: {e}")
         app_logger.warning(f"Chat failed with exception: {e}")
 
         inflight_chat_reqs.dec()
@@ -732,6 +749,7 @@ def api_ab():
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
 
+<<<<<<< Updated upstream
     user_id = payload.get("user_id", "none")
     if not isinstance(user_id, str):
         app_logger.warn("Chat request user_id was invalid")
@@ -804,9 +822,21 @@ def api_ab():
 
     # Simple dev A/B: ask twice with slightly different prompts.
     # Replace later with true multi-model or different temperatures.
+    # Let client override shard_k/top_k for testing
     try:
-        a = ask_corpus(msg)
-        b = ask_corpus(msg + "\n\n(Provide an alternate phrasing / approach.)")
+        shard_k = int(payload.get("shard_k", 20))
+        top_k = int(payload.get("top_k", 10))
+    except Exception:
+        shard_k, top_k = 20, 10
+
+    try:
+        # A
+        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k)
+
+        # B (alternate phrasing prompt)
+        b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
+        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k)
+
 
         app_logger.info(f"Marking job {job_id_a} as done in db...")
         db.mark_done(job_id_a, a)
@@ -814,6 +844,7 @@ def api_ab():
         db.mark_done(job_id_b, a)
 
         app_logger.info(f"AB test done")
+
     except RuntimeError as e:
         app_logger.exception("AB failed")
         inflight_chat_reqs.dec()
@@ -832,12 +863,14 @@ def api_ab():
 
     return jsonify({
         "ok": True,
-        "a": a,
-        "b": b,
+        "a": a_answer,
+        "b": b_answer,
+        "references_a": a_refs,
+        "references_b": b_refs,
         "job_id_a": job_id_a,
         "job_id_b": job_id_b,
-        "references": [],
     }), 200
+
 
 
 # ------------------ Routes: Feedback + Status + Queue ------------------

@@ -101,6 +101,110 @@ function formatDuration(totalSeconds) {
   return `${m}m ${r}s`;
 }
 
+const DEFAULT_NOTE =
+  'Seeds of Truth AI can make mistakes. Please verify important information.';
+
+function setNoteMessage(msg, { busy = false } = {}) {
+  if (els.noteMessage) els.noteMessage.textContent = msg || DEFAULT_NOTE;
+
+  if (els.noteTextWrap) {
+    els.noteTextWrap.classList.toggle('is-busy', !!busy);
+  }
+
+  // spinner visibility is controlled via .is-busy class
+}
+
+function setUiBusy(isBusy) {
+  // prevent repeated submits + make it feel responsive
+  if (els.chatInput) els.chatInput.disabled = !!isBusy;
+
+  // if you have a submit button, disable it too (safe even if null)
+  const submitBtn = els.chatForm?.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = !!isBusy;
+}
+
+/**
+ * Starts a busy state + staged status messages.
+ * Returns a cleanup function you MUST call (preferably in finally).
+ */
+function beginStatus(opLabel) {
+  setUiBusy(true);
+  setNoteMessage(opLabel, { busy: true });
+
+  const timers = [];
+
+  // staged “reassurance” updates for slow inference
+  timers.push(setTimeout(() => setNoteMessage(`${opLabel}…`, { busy: true }), 800));
+  timers.push(setTimeout(() => setNoteMessage('Still working…', { busy: true }), 5000));
+  timers.push(setTimeout(() => setNoteMessage('This can take ~30 seconds on some queries…', { busy: true }), 12000));
+
+  return function endStatus(finalMsg = null) {
+    timers.forEach(clearTimeout);
+    setUiBusy(false);
+    setNoteMessage(finalMsg || DEFAULT_NOTE, { busy: false });
+  };
+}
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Types fullText into textEl with a blinking cursor.
+ * Uses textContent only (safe, no HTML injection).
+ */
+async function typeIntoElement(textEl, fullText, opts = {}) {
+  const {
+    cps = 60,          // characters per second target
+    chunkMin = 1,
+    chunkMax = 4,
+    maxTyped = 800     // type first N chars then snap remainder (UX)
+  } = opts;
+
+  const text = String(fullText ?? '');
+  const toType = text.slice(0, Math.min(text.length, maxTyped));
+  const remainder = text.slice(toType.length);
+
+  // Build cursor node
+  const cursor = document.createElement('span');
+  cursor.className = 'typing-cursor';
+  cursor.textContent = '▍';
+
+  // Clear and attach
+  textEl.textContent = '';
+  textEl.appendChild(cursor);
+
+  let i = 0;
+
+  while (i < toType.length) {
+    const n = Math.min(
+      toType.length - i,
+      chunkMin + Math.floor(Math.random() * (chunkMax - chunkMin + 1))
+    );
+
+    const slice = toType.slice(i, i + n);
+    i += n;
+
+    cursor.insertAdjacentText('beforebegin', slice);
+    scrollChatToBottom?.();
+
+    // pacing
+    let ms = (1000 / cps) * n;
+    const last = slice.slice(-1);
+    if (last === '\n') ms += 120;
+    else if ('.!?'.includes(last)) ms += 140;
+    else if (',;:'.includes(last)) ms += 60;
+
+    await sleep(ms);
+  }
+
+  // Snap remainder instantly (optional but recommended)
+  if (remainder) cursor.insertAdjacentText('beforebegin', remainder);
+
+  // Remove cursor when done
+  cursor.remove();
+  scrollChatToBottom?.();
+}
+
+
 /* =========================================================
    4) MODAL (custom alert/confirm)
    ========================================================= */
@@ -619,7 +723,7 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
   scrollChatToBottom();
 }
 
-// A/B mode: side-by-side answers with selectable choice + feedback
+// A/B mode: side-by-side answers with selectable choice + feedback + typing
 function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   const row = document.createElement('div');
   row.className = 'message-row bot';
@@ -647,7 +751,7 @@ function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     if (btn) btn.innerHTML = '✓ Selected';
   }
 
-  function makePanel(label, text, variant, job_id) {
+  function makePanel(label, variant, job_id) {
     const panel = document.createElement('div');
     panel.className = 'ab-panel';
 
@@ -664,6 +768,9 @@ function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
 
     const id = `ab_${variant}_${nowId('msg')}`;
 
+    // IMPORTANT: snippet must track final text, not the initial placeholder
+    let snippetForFeedback = `[A/B ${variant}]`;
+
     const commentBtn = document.createElement('button');
     commentBtn.type = 'button';
     commentBtn.className = 'comment-btn';
@@ -677,17 +784,17 @@ function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     `;
     commentBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      openFeedbackModal({ type: 'response', id, snippet: `[A/B ${variant}] ${text}`, job_id });
+      openFeedbackModal({ type: 'response', id, snippet: snippetForFeedback, job_id });
     });
 
     actions.appendChild(commentBtn);
     head.appendChild(lbl);
     head.appendChild(actions);
 
-    // body
+    // body (start empty — we will type into this)
     const body = document.createElement('div');
     body.className = 'message-text';
-    body.textContent = text;
+    body.textContent = ''; // or '…' if you want an initial placeholder
 
     // footer
     const footer = document.createElement('div');
@@ -709,18 +816,114 @@ function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     panel.appendChild(footer);
 
     panel.addEventListener('click', () => selectPanel(panel, variant));
-    return panel;
+
+    return {
+      panel,
+      body,
+      setSnippet: (finalText) => {
+        snippetForFeedback = `[A/B ${variant}] ${String(finalText ?? '')}`;
+      }
+    };
   }
 
-  wrap.appendChild(makePanel(meta.labelA || 'Response A', aText, 'A', job_id_a));
-  wrap.appendChild(makePanel(meta.labelB || 'Response B', bText, 'B', job_id_b));
+  const panelA = makePanel(meta.labelA || 'Response A', 'A', job_id_a);
+  const panelB = makePanel(meta.labelB || 'Response B', 'B', job_id_b);
+
+  wrap.appendChild(panelA.panel);
+  wrap.appendChild(panelB.panel);
 
   inner.appendChild(avatar);
   inner.appendChild(wrap);
   row.appendChild(inner);
   els.messagesEl.appendChild(row);
   scrollChatToBottom();
+
+  // --- Typing animation ---
+  const aFinal = String(aText ?? '');
+  const bFinal = String(bText ?? '');
+
+  // Option 1 (recommended): type A then type B (less chaotic)
+  await typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 });
+  panelA.setSnippet(aFinal);
+
+  await typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 });
+  panelB.setSnippet(bFinal);
+
+  // Option 2: type both at once (comment out option 1, uncomment below)
+  // await Promise.all([
+  //   typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 })
+  //     .then(() => panelA.setSnippet(aFinal)),
+  //   typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 })
+  //     .then(() => panelB.setSnippet(bFinal)),
+  // ]);
 }
+
+
+function appendBotTypingMessage(initialText = '') {
+  const row = document.createElement('div');
+  row.className = 'message-row bot';
+
+  const inner = document.createElement('div');
+  inner.className = 'message-content';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar bot';
+  setBotAvatar(avatar);
+
+  const msgId = `bot_${++botMsgCounter}`;
+
+  const contentWrap = document.createElement('div');
+  contentWrap.style.display = 'flex';
+  contentWrap.style.alignItems = 'flex-start';
+  contentWrap.style.gap = '10px';
+  contentWrap.style.width = '100%';
+
+  const textEl = document.createElement('div');
+  textEl.className = 'message-text';
+  textEl.style.flex = '1';
+  textEl.textContent = initialText;
+
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+
+  // IMPORTANT: snippet should reflect FINAL text (not whatever it was initially)
+  let snippetForFeedback = initialText;
+
+  const commentBtn = document.createElement('button');
+  commentBtn.type = 'button';
+  commentBtn.className = 'comment-btn has-tooltip';
+  commentBtn.dataset.tooltip = 'Add feedback';
+  commentBtn.setAttribute('aria-label', 'Add feedback');
+  commentBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+      stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
+    </svg>
+  `;
+  commentBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback });
+  });
+
+  actions.appendChild(commentBtn);
+  contentWrap.appendChild(textEl);
+  contentWrap.appendChild(actions);
+
+  inner.appendChild(avatar);
+  inner.appendChild(contentWrap);
+  row.appendChild(inner);
+
+  els.messagesEl.appendChild(row);
+  scrollChatToBottom();
+
+  return {
+    textEl,
+    setSnippet: (finalText) => { snippetForFeedback = String(finalText ?? ''); },
+    msgId
+  };
+}
+
 
 /* =========================================================
    11) REFERENCES
@@ -860,7 +1063,7 @@ function setReferences(refs) {
     const right = document.createElement('div');
     right.className = 'ref-right';
 
-    // ✅ clickable URL (green, top-right)
+    // clickable URL (green, top-right)
 	const linkText = getRefLink(ref);
 	const href = toHttpsUrl(linkText);
 
@@ -1130,7 +1333,7 @@ async function apiPost(url, payload) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin', // ✅ required for Flask session cookie
+    credentials: 'same-origin', // required for Flask session cookie
     body: JSON.stringify(payload || {})
   });
 
@@ -1199,16 +1402,42 @@ async function apiAccess() {
   return apiGet(CFG.API.ACCESS);
 }
 
-async function apiStatus() {
-  return apiGet(CFG.API.STATUS);
+async function fetchJsonWithTimeout(url, opts = {}, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, { ...opts, signal: controller.signal });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
+    }
+    return data;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
-async function apiQueue() {
-  return apiPost(CFG.API.QUEUE, {});
-}
 
 async function apiFeedback() {
   return apiGet(CFG.API.FEEDBACK);
+}
+
+async function apiStatus({ health = false } = {}) {
+  return fetchJsonWithTimeout(CFG.API.STATUS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ health })
+  }, 4000);
+} 
+
+async function apiQueue({ health = false } = {}) {
+  return apiPost(CFG.API.QUEUE, {
+    user_id: getUserId(),
+    health: health ? "true" : "false",
+  });
 }
 
 /* =========================================================
@@ -1230,7 +1459,7 @@ async function handleChatSubmit(e) {
   const text = (els.chatInput.value || '').trim();
   if (!text) return;
 
-  const userId = getUserId();   
+  const userId = getUserId();
 
   if (els.welcomeMessage) els.welcomeMessage.style.display = 'none';
 
@@ -1240,13 +1469,22 @@ async function handleChatSubmit(e) {
 
   const contextTurns = getContextTurns(toolState.historyTurns);
 
+  // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
-    user_id: userId,          
+    user_id: userId,
     message: text,
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
     context: contextTurns
   };
+
+  // Start “busy” immediately so the user gets feedback right away
+  const initialLabel =
+    toolState.mode === 'search' ? 'Searching' :
+    toolState.mode === 'ab' ? 'Running A/B' :
+    'Thinking';
+
+  const endStatus = beginStatus(initialLabel);
 
   try {
     // Enforce gate client-side (server enforces too)
@@ -1254,25 +1492,34 @@ async function handleChatSubmit(e) {
       toolState.mode = 'search';
       renderToolState();
       saveToolState();
+      setNoteMessage('Searching', { busy: true });
     }
 
     if (toolState.mode === 'search') {
-      const payload = {
-        user_id: userId,      
+      const searchPayload = {
+        user_id: userId,
         query: text,
         max_n: CFG.MAX_REFS,
         mode: 'search',
         history_turns: toolState.historyTurns,
-        context: contextTurns,
+        context: contextTurns
       };
 
-      console.log('[Search → Flask] payload:', payload);
+      console.log('[Search → Flask] payload:', searchPayload);
 
+      // Use an inner try/finally so we *always* end busy even though we return early
       try {
-        const data = await apiSearch(payload);
+        setNoteMessage('Searching corpus…', { busy: true });
+
+        const data = await apiSearch(searchPayload);
         console.log('[Search ← Flask] response:', data);
 
-        const bot = data.message || `Found ${data.num_results ?? (data.results?.length ?? 0)} items. Results below`;
+        setNoteMessage('Rendering results…', { busy: true });
+
+        const bot =
+          data.message ||
+          `Found ${data.num_results ?? (data.results?.length ?? 0)} items. Results below`;
+
         appendMessage(bot, 'bot');
         pushTurn(text, bot);
 
@@ -1291,35 +1538,63 @@ async function handleChatSubmit(e) {
         appendMessage('Search request failed (dev). Check server logs.', 'bot');
         pushStatusMessage(String(err?.message || err));
         setReferences([]);
+      } finally {
+        endStatus(); // IMPORTANT: ends spinner + restores default note
       }
+
       return;
     }
 
     if (toolState.mode === 'ab') {
-      // payload already has user_id
+      setNoteMessage('Generating two responses…', { busy: true });
+
       const data = await apiAB(payload);
-      appendABMessage(data.a || '',
-                      data.b || '',
-                      data.job_id_a || CFG.JOB_ID_NONE,
-                      data.job_id_b || CFG.JOB_ID_NONE,
-                      { labelA: data.labelA, labelB: data.labelB });
+
+      setNoteMessage('Rendering A/B…', { busy: true });
+
+      appendABMessage(data.a || '', data.b || '', data.job_id_a || CFG.JOB_ID_NONE,
+        data.job_id_b || CFG.JOB_ID_NONE,{
+        labelA: data.labelA,
+        labelB: data.labelB
+      });
+
       pushTurn(text, `Response A:\n${data.a || ''}\n\nResponse B:\n${data.b || ''}`);
       setReferences(Array.isArray(data.references) ? data.references : []);
       return;
     }
 
     // chat
-    const data = await apiChat(payload);  // payload already has user_id
+    setNoteMessage('Generating response…', { busy: true });
 
+    const data = await apiChat(payload);
     const reply = data.reply || data.message || data.status || '';
     const job_id = data.job_id || CFG.JOB_ID_NONE;
+    setNoteMessage('Rendering response…', { busy: true });
 
-    appendMessage(reply || '(no reply)', 'bot', job_id);
-    pushTurn(text, reply || '(no reply)');
+	const finalReply = reply || '(no reply)';
+
+	// Create placeholder message immediately
+	const botUI = appendBotTypingMessage('');
+
+	// Type into the existing message-text element
+	await typeIntoElement(botUI.textEl, finalReply, {
+	  cps: 60,
+	  chunkMin: 1,
+	  chunkMax: 4,
+	  maxTyped: 800
+	});
+	// todo Nate: revisit this
+    //appendMessage(reply || '(no reply)', 'bot', job_id);
+	// Ensure feedback uses the final text
+	botUI.setSnippet(finalReply);
+
+	pushTurn(text, finalReply);
+
     setReferences(Array.isArray(data.references) ? data.references : []);
 
   } catch (err) {
     if (err?.status === 403) {
+      // Access revoked / expired
       setModeAccess(false);
       toolState.mode = 'search';
       renderToolState();
@@ -1331,8 +1606,15 @@ async function handleChatSubmit(e) {
 
     appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
     pushStatusMessage(String(err?.message || err));
+    setReferences([]);
+
+  } finally {
+    // Covers chat + ab + outer errors.
+    // Search branch returns early, but it already calls endStatus() in its own finally.
+    endStatus();
   }
 }
+
 
 
 /* =========================================================
@@ -1492,7 +1774,7 @@ function initLockUI() {
 
     try {
       const data = await apiUnlock(pw);
-      const unlocked = !!(data && data.unlocked === true);
+      const unlocked = !!(data && (data.unlocked === true || data.ok === true));
 
 	  if (unlocked) {
 	    setModeAccess(true);
@@ -1528,37 +1810,86 @@ function initLockUI() {
 /* =========================================================
    20) STATUS + QUEUE POLLING
    ========================================================= */
+   
+// Deduplicate status messages so we don't spam the UI every poll
+function pushStatusMessageDedup(msg, key = "generic") {
+  const map = pushStatusMessageDedup._map || (pushStatusMessageDedup._map = new Map());
+  if (map.get(key) === msg) return;
+  map.set(key, msg);
+  pushStatusMessage(msg);
+}
+   
+   
 async function refreshStatusOnce() {
   try {
-    const data = await apiStatus();
-    // If your /api/status includes these fields, reflect them:
-    // { unlocked: bool, retrieval_state_ready: bool, ... }
+    const data = await apiPost(CFG.API.STATUS, { health: "true" });
+
     if (typeof data?.unlocked === 'boolean') setModeAccess(data.unlocked);
 
-    if (data?.retrieval_state_ready === true) setEndpointStatus('ready');
-    else setEndpointStatus('starting');
+    const indexReady = data?.retrieval_state_ready === true;
+    const modelReady = data?.model_ready === true;
+
+    if (indexReady && modelReady) {
+      setEndpointStatus('ready');
+      els.endpointLabel.textContent = 'Endpoint Ready';
+      els.endpointChip.textContent = 'healthy';
+    } else if (indexReady && !modelReady) {
+      setEndpointStatus('starting');
+      els.endpointLabel.textContent = 'Index ready, model warming…';
+      els.endpointChip.textContent = 'warming';
+    } else {
+      setEndpointStatus('starting');
+      els.endpointLabel.textContent = 'Endpoint starting…';
+      els.endpointChip.textContent = 'starting';
+    }
   } catch (_) {
     setEndpointStatus('off');
   }
 }
 
+let lastHealthCheckAt = 0;
+
 async function refreshQueueOnce() {
   try {
-    const data = await apiQueue();
-    // expected: { ok:true, queries_in_line: N } or similar
-    const q = data?.queries_in_line ?? data?.queue ?? 0;
+    const now = Date.now();
+    const doHealth = (now - lastHealthCheckAt) > 60_000; // every 60s
+    const data = await apiQueue({ health: doHealth });
+    if (doHealth) lastHealthCheckAt = now;
+
+    const q = Number(data?.queries_in_line ?? 0);
     setQueueStatus(q);
-  } catch (_) {
-    setQueueStatus(0);
+
+    // Optional: show extra info as a status message
+	if (typeof data?.resps_in_line === "number") {
+	  pushStatusMessageDedup(
+		`Queue: ${q} waiting • ${data.resps_in_line} responses pending`,
+		"queue"
+	  );
+	}
+
+	if (doHealth && typeof data?.model_ready === "boolean") {
+	  pushStatusMessageDedup(
+		`Model health: ${data.model_ready ? "OK" : "not ready"}`,
+		"model"
+	  );
+	}
+
+  } catch (e) {
+    setEndpointStatus('off');
+    // show unknown rather than lying with “0”
+    if (els.queueCountEl) els.queueCountEl.textContent = "—";
+    if (els.queueEtaEl) els.queueEtaEl.textContent = "—";
+	pushStatusMessageDedup(
+	  "Queue check failed (endpoint unreachable).",
+	  "queue-error"
+	);
   }
 }
 
-function startPolling() {
+
+function checkStatusAndQueue() {
   refreshStatusOnce();
   refreshQueueOnce();
-
-  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
-  setInterval(refreshQueueOnce, CFG.QUEUE_POLL_MS);
 }
 
 /* =========================================================
@@ -1606,7 +1937,7 @@ function initDom() {
   els.queueCountEl = document.getElementById('queue-count');
   els.queueEtaEl = document.getElementById('queue-eta');
   els.statusMessagesEl = document.getElementById('status-messages');
-
+ 
   // saved convos
   els.saveConvoBtn = document.getElementById('save-convo-btn');
   els.recentList = document.getElementById('recent-list');
@@ -1638,6 +1969,12 @@ function initDom() {
   els.modalMessage = document.getElementById('modal-message');
   els.modalActions = document.getElementById('modal-actions');
   els.modalCloseBtn = document.getElementById('modal-close');
+  
+  // input note status
+  els.noteTextWrap = document.getElementById('note-text');
+  els.noteMessage = document.getElementById('note-message');
+  els.noteSpinner = document.getElementById('note-spinner');
+  
 }
 
 function initWiring() {
@@ -1714,8 +2051,8 @@ function init() {
   // ask server whether this session is already unlocked
   apiAccess().then(d => setModeAccess(!!d.unlocked)).catch(() => setModeAccess(false));
 
-  // polling for status/queue
-  startPolling();
+  // initial status / queue check on page load
+  checkStatusAndQueue();
 
   // expose debug hooks
   window.setReferences = setReferences;
