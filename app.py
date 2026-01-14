@@ -203,6 +203,7 @@ def worker_body():
         else:
             worker_no_queued_job_interval = 0
 
+        app_logger.info("Background worker making health request")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
         if not model_ready:
             model_not_ready_interval = model_not_ready_interval + 1
@@ -446,7 +447,7 @@ def debug_request():
     raw = request.get_data(cache=True)  # cache=True keeps get_json() working
     if request.path.startswith("/api/"):
         app_logger.info("--- %s %s ---", request.method, request.path)
-        app_logger.info("Content-Type: %s", request.headers.get("Content-Type"))
+        #app_logger.info("Content-Type: %s", request.headers.get("Content-Type"))
         if raw:
             app_logger.info("Body (first 2000 bytes): %s", raw[:2000])
         app_logger.info("JSON: %s", request.get_json(silent=True))
@@ -750,6 +751,7 @@ def api_ab():
         }), 400
 
     # model must be ready for AB test
+    app_logger.info(f"Health request received: user_id '{user_id}'")
     model_ready = _async_to_sync(rag_controller.is_model_ready)()
     if not model_ready:
         preview_msg = msg[:40]
@@ -899,7 +901,9 @@ def api_status():
     payload = request.get_json(silent=True) or {}
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
-    if health:
+    user_id = (payload.get("user_id") or "").strip()
+    if health and user_id:
+        app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
         model_ready = "unchecked"
@@ -930,7 +934,9 @@ def api_queue():
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
 
-    if health:
+    user_id = (payload.get("user_id") or "").strip()
+    if health and user_id:
+        app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
         model_ready = "unchecked"
@@ -966,11 +972,12 @@ def api_queue():
                 "server_time": time.time()
             }), 200
         else:
-            app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
+            #app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
+            pass
 
 
     # This is the general view for those that aren't logged in.
-    app_logger.info(f"processing api_queue() request in general mode")
+    #app_logger.info(f"processing api_queue() request in general mode")
 
     return jsonify({
         "ok": True,
