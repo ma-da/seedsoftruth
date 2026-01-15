@@ -839,6 +839,8 @@ def fetch_queued_outgoing_info(user_id) -> Optional[QueuedResponse]:
                 del outgoing_queue[i]
                 rag_logger.info(f"Fetched queue outgoing info for job_id {item.job_id}, user_id {item.user_id}")
                 return item
+            else:
+                rag_logger.info("Queued msg did not match")
 
     return None
 

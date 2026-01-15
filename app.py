@@ -203,6 +203,7 @@ def worker_body():
         else:
             worker_no_queued_job_interval = 0
 
+        app_logger.info("Background worker making health request")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
         if not model_ready:
             model_not_ready_interval = model_not_ready_interval + 1
@@ -464,7 +465,7 @@ def debug_request():
     raw = request.get_data(cache=True)  # cache=True keeps get_json() working
     if request.path.startswith("/api/"):
         app_logger.info("--- %s %s ---", request.method, request.path)
-        app_logger.info("Content-Type: %s", request.headers.get("Content-Type"))
+        #app_logger.info("Content-Type: %s", request.headers.get("Content-Type"))
         if raw:
             app_logger.info("Body (first 2000 bytes): %s", raw[:2000])
         app_logger.info("JSON: %s", request.get_json(silent=True))
@@ -678,7 +679,7 @@ def api_chat():
             "job_id": job_id,
             "user_id": user_id,
             "detail": ""
-        }), 200
+        }), 503
     else:
         app_logger.info("Model is ready for requests")
 
@@ -749,7 +750,6 @@ def api_ab():
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
 
-<<<<<<< Updated upstream
     user_id = payload.get("user_id", "none")
     if not isinstance(user_id, str):
         app_logger.warn("Chat request user_id was invalid")
@@ -768,6 +768,7 @@ def api_ab():
         }), 400
 
     # model must be ready for AB test
+    app_logger.info(f"Health request received: user_id '{user_id}'")
     model_ready = _async_to_sync(rag_controller.is_model_ready)()
     if not model_ready:
         preview_msg = msg[:40]
@@ -932,7 +933,9 @@ def api_status():
     payload = request.get_json(silent=True) or {}
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
-    if health:
+    user_id = (payload.get("user_id") or "").strip()
+    if health and user_id:
+        app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
         model_ready = "unchecked"
@@ -948,7 +951,7 @@ def api_status():
     }), 200
 
 
-# TODO: The below may not be accurate for queries that are purely in-flight and not stored in the queue.
+# TODO: The queries_in_line may not be accurate for queries that are purely in-flight and not stored in the queue.
 @app.post("/api/queue")
 def api_queue():
     """
@@ -963,7 +966,9 @@ def api_queue():
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
 
-    if health:
+    user_id = (payload.get("user_id") or "").strip()
+    if health and user_id:
+        app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
         model_ready = "unchecked"
@@ -999,11 +1004,12 @@ def api_queue():
                 "server_time": time.time()
             }), 200
         else:
-            app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general.")
+            #app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
+            pass
 
 
     # This is the general view for those that aren't logged in.
-    app_logger.info(f"processing api_queue() request in general mode")
+    #app_logger.info(f"processing api_queue() request in general mode")
 
     return jsonify({
         "ok": True,
