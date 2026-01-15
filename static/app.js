@@ -724,7 +724,7 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
 }
 
 // A/B mode: side-by-side answers with selectable choice + feedback + typing
-function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
+async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   const row = document.createElement('div');
   row.className = 'message-row bot';
 
