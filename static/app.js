@@ -47,7 +47,7 @@ const CFG = {
   JOB_ID_NONE: "none",
 };
 
-const NOT_READY_MSG = 'Model not ready. Message queued for processing.'
+const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
 
 /* =========================================================
    1) DOM LOOKUPS (set in init)
@@ -1441,7 +1441,9 @@ async function apiStatus({ health = false } = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ health })
+    body: JSON.stringify({
+        health: String(health)
+    })
   }, 4000);
 } 
 
@@ -1862,7 +1864,10 @@ function pushStatusMessageDedup(msg, key = "generic") {
    
 async function refreshStatusOnce() {
   try {
-    const data = await apiPost(CFG.API.STATUS, { health: "true" });
+
+    // let queue refresh handle health checking
+    const data = await apiStatus({health: false})
+    //const data = await apiPost(CFG.API.STATUS, { health: "false" });
 
     if (typeof data?.unlocked === 'boolean') setModeAccess(data.unlocked);
 
@@ -1949,10 +1954,20 @@ async function refreshQueueOnce() {
 }
 
 
+// Use this to get status and queue just once
 function checkStatusAndQueue() {
   refreshStatusOnce();
   refreshQueueOnce();
 }
+
+// Use this method if we want to do continual polling
+function startPolling() {
+  checkStatusAndQueue()
+
+  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
+  setInterval(refreshQueueOnce, CFG.QUEUE_POLL_MS);
+}
+
 
 /* =========================================================
    21) INIT / WIRING (bottom)
@@ -2114,7 +2129,11 @@ function init() {
   apiAccess().then(d => setModeAccess(!!d.unlocked)).catch(() => setModeAccess(false));
 
   // initial status / queue check on page load
-  checkStatusAndQueue();
+  //checkStatusAndQueue();
+
+  // starts continual polling for status and delayed responses
+  // @TODO: Implement something smarter. Perhaps polling need only occur if we know we have delayed responses.
+  startPolling();
 
   // expose debug hooks
   window.setReferences = setReferences;

@@ -838,11 +838,10 @@ def api_ab():
         b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
         b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k)
 
-
         app_logger.info(f"Marking job {job_id_a} as done in db...")
-        db.mark_done(job_id_a, a)
+        db.mark_done(job_id_a, a_answer)
         app_logger.info(f"Marking job {job_id_b} as done in db...")
-        db.mark_done(job_id_b, a)
+        db.mark_done(job_id_b, b_answer)
 
         app_logger.info(f"AB test done")
 
