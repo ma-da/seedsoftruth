@@ -320,6 +320,7 @@ def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
     import rag_controller  # type: ignore
 
     async def _run():
+        app_logger.info(f"Doing reference search for query: {query[:20]}")
         return await rag_controller.search_references(  # type: ignore
             retrieval_state,
             query,

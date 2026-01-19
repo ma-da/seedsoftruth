@@ -60,6 +60,9 @@ _TOKEN_RE = re.compile(r"[a-z0-9']+")
 # retain shards for added speed
 _SHARD_CACHE: Dict[str, Any] = {}
 
+# This is used to gate top_k_centroids so irrelevant references won't be included.
+_CENTROID_SIM_MIN_GATE = 0.04
+
 rag_logger = logging_config.get_logger("rag")
 
 # ================== STATE ==================
@@ -300,9 +303,41 @@ def build_query_vector(state: RetrievalState, query: str) -> Optional[np.ndarray
     return qv
 
 
-def top_k_centroids(state: RetrievalState, qv: np.ndarray, k: int = 9) -> List[int]:
+def top_k_centroids(
+    state: RetrievalState,
+    qv: np.ndarray,
+    k: int = 9,
+    min_sim: float = 0.04,  # NEW: centroid similarity gate
+) -> List[int]:
+    """
+    Returns top-k centroid indices whose cosine similarity to qv
+    exceeds a minimum threshold.
+    """
+
+    # cosine similarity because qv and centroids are normalized
     sims = [float(np.dot(qv, c)) for c in state.centroids]
-    return sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
+
+    # rank by similarity
+    ranked = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)
+
+    # NEW: gate weak centroids
+    gated = [i for i in ranked if sims[i] >= min_sim]
+
+    rag_logger.info(f"top_k_centroids distance gating excluded {len(ranked)-len(gated)} number of references, min_sim={min_sim}")
+    if gated:
+        best = sims[gated[0]]
+        worst = sims[gated[-1]]
+
+        rag_logger.info(
+            f"[centroids] accepted={len(gated)} | "
+            f"best={best:.4f} | worst={worst:.4f} | "
+            f"threshold={min_sim:.4f}"
+        )
+
+    if len(gated):
+        rag_logger.info(f"top_k_centroids best distance {len(gated)} number of references")
+
+    return gated[:k]
 
 
 async def fetch_json(url: str) -> Any:
@@ -717,7 +752,7 @@ async def search_references(
     if qv is None:
         return {"query": query, "num_results": 0, "results": [], "message": "No indexable terms."}
 
-    cent_ids = top_k_centroids(state, qv, k=int(centroid_k))
+    cent_ids = top_k_centroids(state, qv, k=int(centroid_k), min_sim=_CENTROID_SIM_MIN_GATE)
     shard_names = [state.group_list[i] for i in cent_ids]
 
     # Validate shard URLs to avoid KeyError surprises
@@ -730,6 +765,9 @@ async def search_references(
 
     shards = await asyncio.gather(*[fetch_json(u) for u in urls])
 
+    # Precompute query sparsity for overlap gating
+    qv_nonzero_idxs = set(np.nonzero(qv)[0])
+
     scored: List[Dict[str, Any]] = []
     for shard in shards:
         # shard is a list of rows
@@ -737,6 +775,17 @@ async def search_references(
             tfidf_pairs = row.get("tfidf") or []
             norm = float(row.get("norm") or 1.0)
             sim = _sparse_dot(tfidf_pairs, qv) / norm if norm > 0 else 0.0
+
+            # token overlap sanity check
+            row_idxs = {int(p[0]) for p in tfidf_pairs if len(p) >= 2}
+            overlap_ratio = (
+                    len(row_idxs & qv_nonzero_idxs) /
+                    max(1, len(qv_nonzero_idxs))
+            )
+
+            if overlap_ratio < 0.05:  # @TODO: tune (0.05–0.2 typical)
+                rag_logger.info("Skipped row in shard, overlap_ratio {overlap_ratio}.")
+                continue
 
             scored.append({
                 "row_id": row.get("row_id"),
@@ -748,8 +797,50 @@ async def search_references(
                 "score_tfidf": float(sim),                  # JSON-safe
             })
 
-    scored.sort(key=lambda d: d.get("score_tfidf", 0.0), reverse=True)
-    results = scored[: int(top_k)]
+    if not scored:
+        return {
+            "query": query,
+            "num_results": 0,
+            "results": [],
+            "message": "No relevant rows after gating."
+        }
+
+    # adaptive distance gating (absolute + relative)
+    scores = np.array(
+        [r["score_tfidf"] for r in scored],
+        dtype=np.float32,
+    )
+
+    max_score = float(scores.max())
+    mean_score = float(scores.mean())
+    std_score = float(scores.std())
+
+    ABS_MIN = 0.03          # hard noise floor
+    REL_FRAC = 0.25         # % of best score
+    Z_CUTOFF = 0.5          # separation heuristic
+
+    threshold = max(
+        ABS_MIN,
+        max_score * REL_FRAC,
+        mean_score + Z_CUTOFF * std_score,
+    )
+
+    # Apply gating
+    scored = [
+        r for r in scored
+        if r["score_tfidf"] >= threshold
+    ]
+
+    if not scored:
+        return {
+            "query": query,
+            "num_results": 0,
+            "results": [],
+            "message": "No sufficiently relevant references found."
+        }
+
+    scored.sort(key=lambda d: d["score_tfidf"], reverse=True)
+    results = scored[:int(top_k)]
 
     return {
         "query": query,
