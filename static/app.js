@@ -1807,6 +1807,8 @@ function initLockUI() {
   }
 
   async function tryUnlock() {
+    console.log("TRY UNLOCK!")  // REMOVE ME
+
     const pw = (lockPass.value || "").trim();
     if (!pw) return;
 
@@ -2126,7 +2128,16 @@ function init() {
   initLockUI();
 
   // ask server whether this session is already unlocked
-  apiAccess().then(d => setModeAccess(!!d.unlocked)).catch(() => setModeAccess(false));
+  apiAccess()
+    .then(d => {
+            const unlocked = !!d.unlocked;
+            setModeAccess(unlocked);
+            if (unlocked) {
+                toolState.mode = "chat";
+            }
+        }
+     )
+    .catch(() => setModeAccess(false));
 
   // initial status / queue check on page load
   //checkStatusAndQueue();
