@@ -6,6 +6,10 @@
    0) TUNABLES / CONSTANTS
    ========================================================= */
 const CFG = {
+  // Version Info,
+  VERSION_NUM: "0.1",
+  VERSION_NAME: "Aardvark",
+
   // LocalStorage keys
   LS_THEME: 'sot-theme',
   LS_SIDEBAR_COLLAPSED: 'sot-sidebar-collapsed',
@@ -2058,7 +2062,15 @@ function initDom() {
   els.noteTextWrap = document.getElementById('note-text');
   els.noteMessage = document.getElementById('note-message');
   els.noteSpinner = document.getElementById('note-spinner');
-  
+
+  // version info
+  els.versionNum = document.getElementById('sidebar-version-num')
+  els.versionName = document.getElementById('sidebar-version-name')
+}
+
+function initVersion() {
+    els.versionNum.textContent = CFG.VERSION_NUM;
+    els.versionName.textContent = CFG.VERSION_NAME;
 }
 
 function initWiring() {
@@ -2104,6 +2116,9 @@ function init() {
     console.warn('Seeds of Truth app.js: required chat elements not found.');
     return;
   }
+
+  // set version info
+  initVersion();
 
   // tool state
   loadToolState();
