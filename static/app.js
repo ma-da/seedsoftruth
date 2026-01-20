@@ -1075,7 +1075,7 @@ function setReferences(refs) {
     const right = document.createElement('div');
     right.className = 'ref-right';
 
-    // clickable URL (green, top-right)
+    // ✅ clickable URL (green, top-right)
 	const linkText = getRefLink(ref);
 	const href = toHttpsUrl(linkText);
 
@@ -1835,7 +1835,6 @@ function initLockUI() {
 	    setModeAccess(false);
 	    lockMsg.textContent = (data && (data.message || data.error)) || "Incorrect password";
 	  }
-
     } catch (err) {
       setModeAccess(false);
       lockMsg.textContent = err?.message || "Not today";
