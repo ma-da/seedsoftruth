@@ -908,6 +908,7 @@ def api_feedback():
         return jsonify({"ok": False, "error": "Field 'style' must be integer"}), 400
 
     comments = utils.get_payload_str(payload, "comments", "")
+    app_logger.info(f"feedback request received for job_id {job_id}, comments {comments[:20]}")
 
     # job id should exist in jobs table
     if not db.job_exists(job_id):
