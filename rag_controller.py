@@ -60,8 +60,95 @@ _TOKEN_RE = re.compile(r"[a-z0-9']+")
 # retain shards for added speed
 _SHARD_CACHE: Dict[str, Any] = {}
 
-# This is used to gate top_k_centroids so irrelevant references won't be included.
-_CENTROID_SIM_MIN_GATE = 0.04
+# --- Min gating parameters ---
+
+# feature flag for enabling min gating
+ENABLE_MIN_GATING = False
+
+# ---------------------------------------------------------------------
+# Retrieval distance / sanity gating parameters
+#
+# These parameters control when a retrieved shard or document is
+# considered "relevant enough" to include in RAG context.
+#
+# They exist to prevent:
+#   - accidental matches on rare tokens
+#   - long-tail noise from vague queries
+#   - flat score distributions where nothing truly stands out
+# ---------------------------------------------------------------------
+
+# Minimum cosine similarity between the query vector and a centroid
+# (topic cluster) for the shard to be searched at all.
+#
+# Typical ranges:
+#   ~0.02–0.03  : very permissive (high recall, more noise)
+#   ~0.04–0.06  : balanced default for mixed corpora
+#   ~0.08+      : strict (risk of missing weak but relevant topics)
+#
+# Below this value, the centroid is effectively unrelated to the query.
+_CENTROID_SIM_MIN_GATE = 0.08
+
+
+# Minimum fraction of query tokens that must also appear in a document
+# for it to be considered conceptually relevant.
+#
+# This guards against documents that match on a single rare word
+# but are otherwise about a different topic entirely.
+#
+# Typical ranges:
+#   0.05        : very permissive (allows rare-token matches)
+#   0.10–0.15   : balanced (recommended for general RAG)
+#   0.20+       : strict (requires strong lexical alignment)
+#
+# NOTE: This gate penalizes paraphrases (e.g. synonyms) and should
+# be looser when embeddings are not used.
+_OVERLAP_RATIO_MIN_GATE = 0.20
+
+
+# Absolute minimum similarity score below which results are always
+# rejected, regardless of relative ranking.
+#
+# This acts as a hard "noise floor" to prevent returning references
+# when the entire result set is weak or irrelevant.
+#
+# Typical ranges:
+#   ~0.02–0.03  : permissive
+#   ~0.03–0.05  : conservative default
+#
+# If the best result is below this value, returning nothing is preferred.
+_ABS_MIN_MIN_GATE = 0.03
+
+
+# Relative similarity threshold expressed as a fraction of the best
+# scoring result.
+#
+# This prevents long-tail dilution by keeping only results that are
+# "in the same league" as the strongest match for the query.
+#
+# Typical ranges:
+#   0.15        : permissive (keeps broader context)
+#   0.25        : balanced default
+#   0.40+       : strict (only near-top matches survive)
+_REL_FRAC_MIN_GATE = 0.25
+
+
+# Separation heuristic: how far above the mean (in standard deviations)
+# a result must be to be considered meaningfully distinct from background
+# noise.
+#
+# This protects against flat score distributions where all results are
+# similarly weak (common with vague or off-corpus queries).
+#
+# Typical ranges:
+#   0.0         : disabled (no separation requirement)
+#   0.3–0.5     : balanced default
+#   1.0+        : strict outlier-only behavior
+#
+# Conceptually: require the result to "stand out", not merely rank first.
+_Z_CUTOFF_MIN_GATE = 0.5
+
+# --- End min gating parameters ---
+
 
 rag_logger = logging_config.get_logger("rag")
 
@@ -752,7 +839,12 @@ async def search_references(
     if qv is None:
         return {"query": query, "num_results": 0, "results": [], "message": "No indexable terms."}
 
-    cent_ids = top_k_centroids(state, qv, k=int(centroid_k), min_sim=_CENTROID_SIM_MIN_GATE)
+    if ENABLE_MIN_GATING:
+        min_sim = _CENTROID_SIM_MIN_GATE
+    else:
+        min_sim = 0.0
+
+    cent_ids = top_k_centroids(state, qv, k=int(centroid_k), min_sim=min_sim)
     shard_names = [state.group_list[i] for i in cent_ids]
 
     # Validate shard URLs to avoid KeyError surprises
@@ -768,6 +860,7 @@ async def search_references(
     # Precompute query sparsity for overlap gating
     qv_nonzero_idxs = set(np.nonzero(qv)[0])
 
+    num_shards_skipped = 0
     scored: List[Dict[str, Any]] = []
     for shard in shards:
         # shard is a list of rows
@@ -777,14 +870,16 @@ async def search_references(
             sim = _sparse_dot(tfidf_pairs, qv) / norm if norm > 0 else 0.0
 
             # token overlap sanity check
+            # if shared contains too few of the query's token, discard it,
+            # no matter what the similarity scores says.
             row_idxs = {int(p[0]) for p in tfidf_pairs if len(p) >= 2}
             overlap_ratio = (
                     len(row_idxs & qv_nonzero_idxs) /
                     max(1, len(qv_nonzero_idxs))
             )
 
-            if overlap_ratio < 0.05:  # @TODO: tune (0.05–0.2 typical)
-                rag_logger.info("Skipped row in shard, overlap_ratio {overlap_ratio}.")
+            if ENABLE_MIN_GATING and overlap_ratio < _OVERLAP_RATIO_MIN_GATE:
+                num_shards_skipped += 1
                 continue
 
             scored.append({
@@ -796,6 +891,7 @@ async def search_references(
                 "snippet_html": _snippet_html_from_text(row.get("text") or "", max_words=500),
                 "score_tfidf": float(sim),                  # JSON-safe
             })
+    rag_logger.info(f"Skipped {num_shards_skipped} rows in shards due to overlap ratios")
 
     if not scored:
         return {
@@ -811,19 +907,24 @@ async def search_references(
         dtype=np.float32,
     )
 
-    max_score = float(scores.max())
-    mean_score = float(scores.mean())
-    std_score = float(scores.std())
+    if ENABLE_MIN_GATING:
+        max_score = float(scores.max())
+        mean_score = float(scores.mean())
+        std_score = float(scores.std())
 
-    ABS_MIN = 0.03          # hard noise floor
-    REL_FRAC = 0.25         # % of best score
-    Z_CUTOFF = 0.5          # separation heuristic
+        threshold1 = max_score * _REL_FRAC_MIN_GATE
+        threshold2 = mean_score + _Z_CUTOFF_MIN_GATE * std_score
 
-    threshold = max(
-        ABS_MIN,
-        max_score * REL_FRAC,
-        mean_score + Z_CUTOFF * std_score,
-    )
+        threshold = max(
+            _ABS_MIN_MIN_GATE,
+            threshold1,
+            threshold2
+        )
+
+        rag_logger.info(
+            f"Threshold calculation: value {threshold}, abs_min_gate {_ABS_MIN_MIN_GATE}, rel_frac {threshold1}, z_cutoff {threshold2}")
+    else:
+        threshold = 0
 
     # Apply gating
     scored = [

@@ -43,6 +43,7 @@ import inspect
 import utils
 
 import db
+from rag_controller import ENABLE_MIN_GATING
 
 
 # ------------------ Logging ------------------
@@ -298,6 +299,11 @@ def ensure_state() -> bool:
 init_state(force=False)
 db.init_db()
 init_worker()
+
+if ENABLE_MIN_GATING:
+    app_logger.info("Min gating feature is enabled")
+else:
+    app_logger.info("Min gating feature is disabled")
 
 
 # ------------------ Shared search/chat functions ------------------
@@ -987,7 +993,6 @@ def api_queue():
         job_index, queued_job = rag_controller.fetch_queued_job_info(user_id)
         queued_resp = rag_controller.fetch_queued_outgoing_info(user_id)
 
-        app_logger.info(f"queued_job found: {queued_job is not None}, queued_resp found: {queued_resp is not None}")
         if queued_job is not None or queued_resp is not None:
             app_logger.info(f"Queued response was found for used_id {user_id}")
 
