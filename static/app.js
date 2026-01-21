@@ -6,6 +6,10 @@
    0) TUNABLES / CONSTANTS
    ========================================================= */
 const CFG = {
+  // Version Info,
+  VERSION_NUM: "0.1",
+  VERSION_NAME: "Aardvark",
+
   // LocalStorage keys
   LS_THEME: 'sot-theme',
   LS_SIDEBAR_COLLAPSED: 'sot-sidebar-collapsed',
@@ -155,10 +159,10 @@ function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
  */
 async function typeIntoElement(textEl, fullText, opts = {}) {
   const {
-    cps = 60,          // characters per second target
+    cps = 60,               // characters per second target
     chunkMin = 1,
     chunkMax = 4,
-    maxTyped = 800     // type first N chars then snap remainder (UX)
+    maxTyped = 800          // type first N chars then snap remainder (UX)
   } = opts;
 
   const text = String(fullText ?? '');
@@ -848,10 +852,10 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   const bFinal = String(bText ?? '');
 
   // Option 1 (recommended): type A then type B (less chaotic)
-  await typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 });
+  await typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
   panelA.setSnippet(aFinal);
 
-  await typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 });
+  await typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
   panelB.setSnippet(bFinal);
 
   // Option 2: type both at once (comment out option 1, uncomment below)
@@ -864,7 +868,7 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
 }
 
 
-function appendBotTypingMessage(initialText = '') {
+function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
   const row = document.createElement('div');
   row.className = 'message-row bot';
 
@@ -888,6 +892,9 @@ function appendBotTypingMessage(initialText = '') {
   textEl.style.flex = '1';
   textEl.textContent = initialText;
 
+  // attach job_id
+  textEl.dataset.jobId = job_id;
+
   const actions = document.createElement('div');
   actions.className = 'msg-actions';
 
@@ -908,7 +915,7 @@ function appendBotTypingMessage(initialText = '') {
   `;
   commentBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback });
+    openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback, job_id });
   });
 
   actions.appendChild(commentBtn);
@@ -1068,7 +1075,7 @@ function setReferences(refs) {
     const right = document.createElement('div');
     right.className = 'ref-right';
 
-    // clickable URL (green, top-right)
+    // ✅ clickable URL (green, top-right)
 	const linkText = getRefLink(ref);
 	const href = toHttpsUrl(linkText);
 
@@ -1588,17 +1595,19 @@ async function handleChatSubmit(e) {
 	const finalReply = reply || '(no reply)';
 
 	// Create placeholder message immediately
-	const botUI = appendBotTypingMessage('');
+	const botUI = appendBotTypingMessage('', job_id);
 
 	// Type into the existing message-text element
 	await typeIntoElement(botUI.textEl, finalReply, {
 	  cps: 60,
 	  chunkMin: 1,
 	  chunkMax: 4,
-	  maxTyped: 800
+	  maxTyped: 800,
 	});
-	// todo Nate: revisit this
+
+    // OLD CODE - REMOVE WHEN READY
     //appendMessage(reply || '(no reply)', 'bot', job_id);
+
 	// Ensure feedback uses the final text
 	botUI.setSnippet(finalReply);
 
@@ -1826,7 +1835,6 @@ function initLockUI() {
 	    setModeAccess(false);
 	    lockMsg.textContent = (data && (data.message || data.error)) || "Incorrect password";
 	  }
-
     } catch (err) {
       setModeAccess(false);
       lockMsg.textContent = err?.message || "Not today";
@@ -2053,7 +2061,15 @@ function initDom() {
   els.noteTextWrap = document.getElementById('note-text');
   els.noteMessage = document.getElementById('note-message');
   els.noteSpinner = document.getElementById('note-spinner');
-  
+
+  // version info
+  els.versionNum = document.getElementById('sidebar-version-num')
+  els.versionName = document.getElementById('sidebar-version-name')
+}
+
+function initVersion() {
+    els.versionNum.textContent = CFG.VERSION_NUM;
+    els.versionName.textContent = CFG.VERSION_NAME;
 }
 
 function initWiring() {
@@ -2099,6 +2115,9 @@ function init() {
     console.warn('Seeds of Truth app.js: required chat elements not found.');
     return;
   }
+
+  // set version info
+  initVersion();
 
   // tool state
   loadToolState();

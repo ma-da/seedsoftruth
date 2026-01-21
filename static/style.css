@@ -477,6 +477,13 @@ body.sidebar-collapsed .sidebar-open-btn{ display: inline-flex; }
 }
 body.light .sidebar-user-sub{ color: var(--muted-light); }
 
+.sidebar-version-info{
+  font-size: 11px;
+  color: var(--muted-medium);
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
 /* Never allow horizontal scrollbars in the sidebar */
 #sidebar.sidebar{
   overflow-x: hidden;
