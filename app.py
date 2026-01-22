@@ -36,6 +36,8 @@ from typing import List, Optional, Dict, Any
 from zoneinfo import ZoneInfo
 import time as time_module
 
+from numpy.ma.core import true_divide
+
 import rag_controller
 
 from asgiref.sync import async_to_sync  # pip install asgiref
@@ -89,6 +91,7 @@ RATE_LIMITING_INTERVAL = 30
 rate_limiter = utils.SimpleUserRateLimiter(RATE_LIMITING_INTERVAL)
 
 # Server time gating
+ENABLE_TIME_GATING = True
 EASTERN_TZ = ZoneInfo("America/New_York")
 START_TIME = time(9, 0)   # 9:00 AM
 END_TIME   = time(22, 0)  # 10:00 PM
@@ -310,6 +313,9 @@ def is_within_service_hours(
     """
     Returns True if current time is within allowed service hours.
     """
+    if not ENABLE_TIME_GATING:
+        return True
+
     if now is None:
         now = datetime.now(tz)
     else:
