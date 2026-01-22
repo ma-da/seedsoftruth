@@ -31,12 +31,15 @@ import time
 import threading
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from typing import List, Optional, Dict, Any
+from zoneinfo import ZoneInfo
+import time as time_module
+
 import rag_controller
 
 from asgiref.sync import async_to_sync  # pip install asgiref
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, abort
 
 import traceback
 import inspect
@@ -84,6 +87,12 @@ inflight_chat_reqs = utils.SafeInt(0)
 # User rate limiter
 RATE_LIMITING_INTERVAL = 30
 rate_limiter = utils.SimpleUserRateLimiter(RATE_LIMITING_INTERVAL)
+
+# Server time gating
+EASTERN_TZ = ZoneInfo("America/New_York")
+START_TIME = time(9, 0)   # 9:00 AM
+END_TIME   = time(22, 0)  # 10:00 PM
+
 
 # ------------------ Password gating ------------------
 
@@ -146,7 +155,7 @@ def init_state(force: bool = False) -> bool:
     if retrieval_state is not None:
         return True
 
-    now = time.time()
+    now = time_module.time()
     if (not force) and (now - _last_init_attempt_ts) < INIT_RETRY_COOLDOWN_S:
         return False
 
@@ -154,7 +163,7 @@ def init_state(force: bool = False) -> bool:
         if retrieval_state is not None:
             return True
 
-        now = time.time()
+        now = time_module.time()
         if (not force) and (now - _last_init_attempt_ts) < INIT_RETRY_COOLDOWN_S:
             return False
 
@@ -199,7 +208,7 @@ def worker_body():
                 app_logger.info("Worker thread heartbeat. No job work to do.")
                 worker_no_queued_job_interval = 0
 
-            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
             continue
         else:
             worker_no_queued_job_interval = 0
@@ -214,7 +223,7 @@ def worker_body():
                 app_logger.info("Model still not ready. Worker body waiting.")
                 model_not_ready_interval = 0
 
-            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
             continue
         else:
             model_not_ready_interval = 0
@@ -225,7 +234,7 @@ def worker_body():
 
         queued_job = rag_controller.get_next_queued_job()
         if not queued_job:
-            time.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
             continue
 
         try:
@@ -292,6 +301,47 @@ def init_worker():
 def ensure_state() -> bool:
     """Lazy initializer used by routes. Returns True if ready."""
     return init_state(force=False)
+
+
+def is_within_service_hours(
+    now: datetime | None = None,
+    tz: ZoneInfo = EASTERN_TZ,
+) -> bool:
+    """
+    Returns True if current time is within allowed service hours.
+    """
+    if now is None:
+        now = datetime.now(tz)
+    else:
+        now = now.astimezone(tz)
+
+    current = now.time()
+    return START_TIME <= current < END_TIME
+
+
+def no_time_gate(fn):
+    """
+    Flask web handlers should use this as a decorator to indicate that no time gate will be used
+    """
+    fn._no_time_gate = True
+    return fn
+
+
+@app.before_request
+def time_gate():
+    """
+    Implements the logical time gate for the given business hours.
+    """
+    endpoint = app.view_functions.get(request.endpoint)
+    if getattr(endpoint, "_no_time_gate", False):
+        return
+
+    if not is_within_service_hours():
+        abort(
+            403,
+            description=f"API available {START_TIME.strftime('%I:%M %p').lstrip('0').lower()}–"
+                        f"{END_TIME.strftime('%I:%M %p').lstrip('0').lower()} EST",
+)
 
 
 # Eager init once at import time (fine under systemd + gunicorn).
@@ -481,6 +531,7 @@ def debug_request():
 # ------------------ Routes: Auth ------------------
 
 @app.post("/api/unlock")
+@no_time_gate
 def api_unlock():
     payload = request.get_json(silent=True) or {}
     pw = (payload.get("password") or "").strip()
@@ -508,6 +559,7 @@ def api_unlock():
 
 
 @app.get("/api/access")
+@no_time_gate
 def api_access():
     return jsonify({"ok": True, "unlocked": _is_unlocked()}), 200
 
@@ -515,6 +567,7 @@ def api_access():
 # ------------------ Routes: Demo ping ------------------
 
 @app.post("/api/ping")
+@no_time_gate
 def api_ping():
     data = request.get_json(force=True)
     return jsonify({
@@ -934,6 +987,7 @@ def api_feedback():
 
 
 @app.route("/api/status", methods=["GET", "POST"])
+@no_time_gate
 def api_status():
     unlocked = _is_unlocked()
 
@@ -941,7 +995,7 @@ def api_status():
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
     user_id = (payload.get("user_id") or "").strip()
-    if health and user_id:
+    if health and user_id and is_within_service_hours():
         app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
@@ -960,6 +1014,7 @@ def api_status():
 
 # TODO: The queries_in_line may not be accurate for queries that are purely in-flight and not stored in the queue.
 @app.post("/api/queue")
+@no_time_gate
 def api_queue():
     """
     This allows clients to get info on queue depth and endpoint status.
@@ -974,7 +1029,7 @@ def api_queue():
     health = utils.str_to_bool(health_str, strict=False)
 
     user_id = (payload.get("user_id") or "").strip()
-    if health and user_id:
+    if health and user_id and is_within_service_hours():
         app_logger.info(f"Health request received: user_id '{user_id}'")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
@@ -1007,7 +1062,7 @@ def api_queue():
                 "job_in_line": job_index,
                 "outgoing_resp": resp_json,
                 "model_ready": model_ready,
-                "server_time": time.time()
+                "server_time": time_module.time()
             }), 200
         else:
             #app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
@@ -1022,7 +1077,7 @@ def api_queue():
         "queries_in_line": queue_len,
         "resps_in_line": resp_len,
         "model_ready": model_ready,
-        "server_time": time.time()
+        "server_time": time_module.time()
     }), 200
 
 
