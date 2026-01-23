@@ -1342,6 +1342,7 @@ async function clearCurrentChat() {
    15) FLASK API HELPERS (session cookie enabled)
    ========================================================= */
 async function apiPost(url, payload) {
+  // TODO: Remove for prod
   console.log("API POST to url: " + url)
 
   const res = await fetch(url, {
@@ -1454,10 +1455,9 @@ async function apiStatus({ health = false } = {}) {
   }, 4000);
 } 
 
-async function apiQueue({ health = false } = {}) {
+async function apiQueue() {
   return apiPost(CFG.API.QUEUE, {
     user_id: getUserId(),
-    health: health ? "true" : "false",
   });
 }
 
@@ -1605,9 +1605,6 @@ async function handleChatSubmit(e) {
 	  maxTyped: 800,
 	});
 
-    // OLD CODE - REMOVE WHEN READY
-    //appendMessage(reply || '(no reply)', 'bot', job_id);
-
 	// Ensure feedback uses the final text
 	botUI.setSnippet(finalReply);
 
@@ -1628,6 +1625,7 @@ async function handleChatSubmit(e) {
 
         appendMessage(NOT_READY_MSG, 'bot', job_id);
         pushStatusMessage(NOT_READY_MSG);
+        setEndpointStatus('starting');
         return;
     }
 
@@ -1816,8 +1814,6 @@ function initLockUI() {
   }
 
   async function tryUnlock() {
-    console.log("TRY UNLOCK!")  // REMOVE ME
-
     const pw = (lockPass.value || "").trim();
     if (!pw) return;
 
@@ -1870,46 +1866,58 @@ function pushStatusMessageDedup(msg, key = "generic") {
   map.set(key, msg);
   pushStatusMessage(msg);
 }
-   
-   
-async function refreshStatusOnce() {
+
+let lastHealthCheckAt = 0;
+
+async function refreshStatusOnce(sendHealth = false) {
   try {
+    const now = Date.now();
+    const doHealth = sendHealth || (now - lastHealthCheckAt) > 60_000; // every 60s
 
     // let queue refresh handle health checking
-    const data = await apiStatus({health: false})
-    //const data = await apiPost(CFG.API.STATUS, { health: "false" });
+    //console.log("refreshStatusOnce: doing health? " + doHealth)
+    const data = await apiStatus({health: doHealth})
 
     if (typeof data?.unlocked === 'boolean') setModeAccess(data.unlocked);
 
     const indexReady = data?.retrieval_state_ready === true;
+    const hasModelReady = "model_ready" in data;
     const modelReady = data?.model_ready === true;
 
-    if (indexReady && modelReady) {
+    if (doHealth && hasModelReady) lastHealthCheckAt = now;
+    //console.log("refreshStatusOnce " + sendHealth + ", hasModelReady " + hasModelReady + ", modelReady " + modelReady)
+
+	if (doHealth && typeof data?.model_ready === "boolean") {
+	  pushStatusMessageDedup(
+		`Model health: ${data.model_ready ? "OK" : "not ready"}`,
+		"model"
+	  );
+	}
+
+    // endpoint status only updated when there a health status is done
+    if (indexReady && hasModelReady && modelReady) {
       setEndpointStatus('ready');
       els.endpointLabel.textContent = 'Endpoint Ready';
       els.endpointChip.textContent = 'healthy';
-    } else if (indexReady && !modelReady) {
+    } else if (indexReady && hasModelReady && !modelReady) {
       setEndpointStatus('starting');
+
       els.endpointLabel.textContent = 'Index ready, model warming…';
       els.endpointChip.textContent = 'warming';
-    } else {
+    } else if (hasModelReady) {
       setEndpointStatus('starting');
       els.endpointLabel.textContent = 'Endpoint starting…';
       els.endpointChip.textContent = 'starting';
     }
-  } catch (_) {
+  } catch (err) {
+    console.error("problem in refreshStatusOnce: ", err.message)
     setEndpointStatus('off');
   }
 }
 
-let lastHealthCheckAt = 0;
-
 async function refreshQueueOnce() {
   try {
-    const now = Date.now();
-    const doHealth = (now - lastHealthCheckAt) > 60_000; // every 60s
-    const data = await apiQueue({ health: doHealth });
-    if (doHealth) lastHealthCheckAt = now;
+    const data = await apiQueue({ health: false });  // let status line handle health
 
     const q = Number(data?.queries_in_line ?? 0);
     setQueueStatus(q);
@@ -1922,13 +1930,6 @@ async function refreshQueueOnce() {
 	  );
 	}
 
-	if (doHealth && typeof data?.model_ready === "boolean") {
-	  pushStatusMessageDedup(
-		`Model health: ${data.model_ready ? "OK" : "not ready"}`,
-		"model"
-	  );
-	}
-
     // queue resp message may contain the results of delayed chat messages
     let delayed_resp = null;
     const raw = data?.outgoing_resp;
@@ -1937,7 +1938,7 @@ async function refreshQueueOnce() {
       const trimmed = raw.trim();
       if (trimmed) {
         try {
-          console.log("found outgoing queue resp. parsing...")
+          //console.log("found outgoing queue resp. parsing...")
           delayed_resp = JSON.parse(trimmed);
         } catch (e) {
           console.error("Failed to parse outgoing_resp", e, trimmed);
@@ -1948,10 +1949,11 @@ async function refreshQueueOnce() {
     }
 
     if (delayed_resp) {
-        console.log("refreshQueueOnce Got related resp: " + delayed_resp)
+        //console.log("refreshQueueOnce Got related resp: " + delayed_resp)
         processQueuedMsg(delayed_resp.job_id, delayed_resp.reply)
     }
   } catch (e) {
+    console.error("refreshQueueOnce error: ", e.message)
     setEndpointStatus('off');
     // show unknown rather than lying with “0”
     if (els.queueCountEl) els.queueCountEl.textContent = "—";
@@ -1965,17 +1967,15 @@ async function refreshQueueOnce() {
 
 
 // Use this to get status and queue just once
-function checkStatusAndQueue() {
-  refreshStatusOnce();
+function checkStatusAndQueue(sendHealth = true) {
+  refreshStatusOnce(sendHealth);
   refreshQueueOnce();
 }
 
 // Use this method if we want to do continual polling
 function startPolling() {
-  checkStatusAndQueue()
-
-  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
   setInterval(refreshQueueOnce, CFG.QUEUE_POLL_MS);
+  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
 }
 
 
@@ -2158,8 +2158,8 @@ function init() {
      )
     .catch(() => setModeAccess(false));
 
-  // initial status / queue check on page load
-  //checkStatusAndQueue();
+  // set initial status / queue check on page load
+  checkStatusAndQueue(true);
 
   // starts continual polling for status and delayed responses
   // @TODO: Implement something smarter. Perhaps polling need only occur if we know we have delayed responses.

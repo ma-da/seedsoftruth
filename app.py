@@ -1001,21 +1001,34 @@ def api_status():
     health_str = (payload.get("health") or "").strip()
     health = utils.str_to_bool(health_str, strict=False)
     user_id = (payload.get("user_id") or "").strip()
-    if health and user_id and is_within_service_hours():
-        app_logger.info(f"Health request received: user_id '{user_id}'")
+
+    is_within_hours = is_within_service_hours()
+    if health and is_within_hours:
+        app_logger.info("status health checked")
         model_ready = _async_to_sync(rag_controller.is_model_ready)()
     else:
+        app_logger.info("status health unchecked")
         model_ready = "unchecked"
 
-    app_logger.info(f"Status request was received. is_unlocked: {unlocked}, model_ready: {model_ready}")
+    app_logger.info(f"status request received for user_id: {user_id}, is_unlocked: {unlocked}, model_ready: {model_ready}, health {health}, is_within_hours {is_within_hours}")
 
-    return jsonify({
-        "ok": True,
-        "status": "status was successful",
-        "unlocked": _is_unlocked(),
-        "retrieval_state_ready": retrieval_state is not None,
-        "model_ready": model_ready,
-    }), 200
+    if model_ready == "unchecked":
+        app_logger.info("api_status model_ready unchecked")
+        return jsonify({
+            "ok": True,
+            "status": "status was successful",
+            "unlocked": _is_unlocked(),
+            "retrieval_state_ready": retrieval_state is not None,
+        }), 200
+    else:
+        app_logger.info(f"api_status model_ready {model_ready}")
+        return jsonify({
+            "ok": True,
+            "status": "status was successful",
+            "unlocked": _is_unlocked(),
+            "retrieval_state_ready": retrieval_state is not None,
+            "model_ready": model_ready,
+        }), 200
 
 
 # TODO: The queries_in_line may not be accurate for queries that are purely in-flight and not stored in the queue.
@@ -1030,16 +1043,6 @@ def api_queue():
 
     locked = _require_unlocked()
     payload = request.get_json(silent=True) or {}
-
-    health_str = (payload.get("health") or "").strip()
-    health = utils.str_to_bool(health_str, strict=False)
-
-    user_id = (payload.get("user_id") or "").strip()
-    if health and user_id and is_within_service_hours():
-        app_logger.info(f"Health request received: user_id '{user_id}'")
-        model_ready = _async_to_sync(rag_controller.is_model_ready)()
-    else:
-        model_ready = "unchecked"
 
     queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.get()
     resp_len = rag_controller.outgoing_queue_len()
@@ -1067,7 +1070,6 @@ def api_queue():
                 "resps_in_line": resp_len,
                 "job_in_line": job_index,
                 "outgoing_resp": resp_json,
-                "model_ready": model_ready,
                 "server_time": time_module.time()
             }), 200
         else:
@@ -1082,7 +1084,6 @@ def api_queue():
         "ok": True,
         "queries_in_line": queue_len,
         "resps_in_line": resp_len,
-        "model_ready": model_ready,
         "server_time": time_module.time()
     }), 200
 
