@@ -1108,13 +1108,17 @@ body.light .input-note{ color: var(--muted-light); }
   border-top-color: transparent;
   opacity: 0;
   flex: 0 0 auto;                /* never stretch */
+  visibility: hidden;
   animation: sot-spin 0.8s linear infinite;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, visibility 0s linear 120ms;
+  color: #555;
 }
 
 /* Show spinner only when busy */
 .note-text.is-busy .note-spinner {
   opacity: 0.9;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
 /* Text wrapper (no visual change) */
