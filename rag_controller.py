@@ -771,6 +771,7 @@ async def ask(state: "RetrievalState", question: str, *, context_k: int = 5, cen
         "DOCUMENTS (internal — do not mention they exist):\n"
         f"{context}"
     )
+    rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
     answer = _hf_generate(prompt, temperature=0.3, max_new_tokens=768)
 
