@@ -561,7 +561,11 @@ def build_context(
 
 # ================== ORCHESTRATION ==================
 
-HF_ENDPOINT_URL = "https://cr41uamktrsdyg3d.us-east-1.aws.endpoints.huggingface.cloud"
+# V4A
+#HF_ENDPOINT_URL = "https://cr41uamktrsdyg3d.us-east-1.aws.endpoints.huggingface.cloud"
+
+# V7
+HF_ENDPOINT_URL = "https://d6pfgv6yisy4pld2.us-east-1.aws.endpoints.huggingface.cloud"
 
 # The Huggingface token
 # NOTE DO NOT CHECK IN THE ACTUAL HF TOKEN
