@@ -1,0 +1,6 @@
+{
+  "num_docs": 38446,
+  "shard_size": 601,
+  "num_shards": 64,
+  "group_naming": "group_{sid:04d}.json"
+}

@@ -21,3 +21,7 @@ urllib3==2.3.0
 wadllib==2.0.0
 zipp==3.21.0
 zope.interface==7.2
+bm25s==0.3.0
+orjson==3.11.7
+tqdm==4.67.3
+pandas==3.0.1
