@@ -45,10 +45,10 @@ Stop after the answer.
 """.strip()
 
 # --- Data paths (override via env) ---
-TRINEDAY_DATA_DIR = Path(os.getenv("TRINEDAY_DATA_DIR", "/var/www/seedsoftruth-dev/data/trineday_mini"))
+TRINEDAY_DATA_DIR = Path(os.getenv("TRINEDAY_DATA_DIR", "./data/trineday_mini"))
 CHUNKS_JSONL = Path(os.getenv("TRINEDAY_CHUNKS_JSONL", str(TRINEDAY_DATA_DIR / "trineday_mini_chunks.jsonl")))
 
-# Either single-index mode:
+# Either single-index mode :
 BM25_INDEX_DIR = Path(os.getenv("TRINEDAY_BM25_INDEX_DIR", str(TRINEDAY_DATA_DIR / "bm25_index")))
 
 # Or shard mode:
@@ -442,7 +442,9 @@ def build_context(
 
 # ------------------ HF ORCHESTRATION (unchanged from your version) ------------------
 
+# endpoint wtk-trineday-mini-llama3-70b-muu
 HF_ENDPOINT_URL = "https://d6pfgv6yisy4pld2.us-east-1.aws.endpoints.huggingface.cloud" #os.getenv("HF_ENDPOINT_URL", "").strip()
+
 HF_API_KEY = os.getenv("HF_API_KEY", "").strip()
 HF_TIMEOUT = int(os.getenv("HF_TIMEOUT_SECS", "900"))
 HF_MAX_ATTEMPTS = int(os.getenv("HF_MAX_ATTEMPTS", "10"))
@@ -458,6 +460,63 @@ HF_REQ_HEADERS = {
 
 HF_HEALTH_PAYLOAD = {"inputs": "health_check"}
 HF_REQ_TIMEOUT_SECS = 5
+
+
+async def is_model_ready(timeout=HF_REQ_TIMEOUT_SECS) -> bool:
+    rag_logger.info("checking health...")
+    try:
+        r = requests.post(f"{HF_ENDPOINT_URL}",
+                          headers=HF_REQ_HEADERS,
+                          json=HF_HEALTH_PAYLOAD,
+                          timeout=timeout)
+        if r.status_code == 200:
+            if r.json().get("health") == "ok":
+                rag_logger.info("Model ready: Custom health response received")
+                return True
+            else:
+                rag_logger.info("Processed response but not explicit health OK")
+                return False  # Or False if strict
+        elif r.status_code in (401, 403):
+            rag_logger.error(f"Auth error {r.status_code}: Invalid HF_API_KEY?")
+            return False
+        elif r.status_code == 503:
+            rag_logger.info("503: Model likely still loading (cold start)")
+            return False
+        else:
+            rag_logger.warning(f"Unexpected status: {r.status_code} - {r.text}")
+            return False
+    except requests.Timeout:
+        rag_logger.warning("Health check timed out (model loading?)")
+        return False
+    except Exception as e:
+        rag_logger.warning(f"Health check failed: {e}")
+        return False
+
+
+async def send_warmup() -> bool:
+    payload = {
+        "inputs": HF_WARMUP_PROMPT,
+        "parameters": {
+            "max_new_tokens": HF_WARMUP_MAX_NEW_TOKENS,
+            "temperature": 0.1,
+            "stop_sequences": ["\n", "Q:"]
+        }
+    }
+    try:
+        r = requests.post(
+            f"{HF_ENDPOINT_URL}/generate",
+            json=payload,
+            headers=HF_REQ_HEADERS,
+            timeout=60
+        )
+        if r.status_code == 200:
+            rag_logger.info(f"Warm-up successful! Response: {r.json().get('generated_text', '')[:100]}")
+            return True
+    except Exception as e:
+        rag_logger.warning(f"Warm-up request failed: {e}")
+
+    return False
+
 
 def _parse_hf_text(data) -> str:
     if isinstance(data, list) and data and isinstance(data[0], dict):
@@ -571,29 +630,88 @@ def queue_job(user_id, job_id, msg) -> bool:
         job_queue.append(queued_job)
         return len(job_queue)
 
-def get_next_queued_job() -> Optional[QueuedJob]:
+
+def fetch_queued_job_info(user_id) -> (int, Optional[QueuedJob]):
+    global job_queue, job_lock
+
     with job_lock:
-        return job_queue[0] if job_queue else None
+        for i, item in enumerate(job_queue):
+           if user_id == item.user_id:
+               return i, item
+
+    return 0, None
+
+
+def has_queued_job() -> bool:
+    global job_queue, job_lock
+
+    with job_lock:
+        return len(job_queue) > 0
+
+
+def get_next_queued_job() -> Optional[QueuedJob]:
+    global job_queue, job_lock
+
+    with job_lock:
+        if len(job_queue) == 0:
+            return None
+        return job_queue[0]
+
 
 def pop_next_queued_job():
+    global job_queue, job_lock
+
     with job_lock:
-        if job_queue:
-            job_queue.pop(0)
+        if len(job_queue) == 0:
+            return
+        job_queue.pop(0)
+
+
+def job_queue_len():
+    global job_queue, job_lock
+
+    with job_lock:
+        return len(job_queue)
+
 
 def queue_outgoing(response) -> bool:
+    global outgoing_queue, outgoing_lock
+
     if not isinstance(response, QueuedResponse):
         raise RuntimeError("queue_outgoing requires QueuedResponse param")
+
     with outgoing_lock:
         outgoing_queue.append(response)
-        return len(outgoing_queue)
+        qsize = len(outgoing_queue)
 
+    rag_logger.info(f"Outgoing resp with job_id {response.job_id} was queued successfully for sending. Curr depth: {qsize}")
+    return qsize
+
+
+# Currently, we only support one inflight request. This might have to change in the future if we do more.
+# Fetching removes the item from queue
 def fetch_queued_outgoing_info(user_id) -> Optional[QueuedResponse]:
+    global outgoing_queue, outgoing_lock
+
     with outgoing_lock:
         for i, item in enumerate(outgoing_queue):
+            #rag_logger.info(f"Outgoing fetch: found {item.user_id} vs. target {user_id}")
             if user_id == item.user_id:
                 del outgoing_queue[i]
+                rag_logger.info(f"Fetched queue outgoing info for job_id {item.job_id}, user_id {item.user_id}")
                 return item
+            else:
+                rag_logger.info("Queued msg did not match")
+
     return None
+
+
+def outgoing_queue_len():
+    global outgoing_queue, outgoing_lock
+
+    with outgoing_lock:
+        return len(outgoing_queue)
+
 
 # ------------------ MAIN (for local CLI test) ------------------
 
