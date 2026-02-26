@@ -251,7 +251,7 @@ def _truncate_words(text: str, max_words: int) -> str:
         return text or ""
     return " ".join(words[:max_words]) + "…"
 
-def _snippet_html_from_text(text: str, max_words: int = 500) -> str:
+def _snippet_html_from_text(text: str, max_words: int = 600) -> str:
     import html as _html
     t = _truncate_words(text or "", max_words)
     t = _html.escape(t).replace("\n", "<br>")
@@ -259,15 +259,20 @@ def _snippet_html_from_text(text: str, max_words: int = 500) -> str:
 
 def _row_to_result(df: pd.DataFrame, row: pd.Series, score: float) -> Dict[str, Any]:
     txt = str(row.get("text") or "")
+    src = str(row.get("source_url") or "").strip()
+
     return {
         "row_id": row.get("chunk_id") or row.get("doc_idx"),
-        "source": row.get("source_url") or "",
+
+        "source_url": src,
+        "source": src,
+
         "title": row.get("title") or "",
         "publisher": row.get("publisher") or "",
         "found_on": row.get("found_on") or "",
         "text": txt,
         "snippet": txt[:1200],
-        "snippet_html": _snippet_html_from_text(txt, max_words=500),
+        "snippet_html": _snippet_html_from_text(txt, max_words=600),
         "score_bm25": float(score),
     }
 
@@ -612,6 +617,34 @@ async def ask(state: RetrievalState, question: str, *, context_k: int = 5, top_k
 
     return answer.strip()
 
+async def ask_model_only(
+    state: RetrievalState,
+    question: str,
+    *,
+    verbose: bool = True,
+) -> str:
+    """
+    Model-only answer: NO retrieval, NO documents injected.
+    Still applies truncate_question and uses the same SYSTEM_PROMPT.
+    """
+    rag_logger.info(f"ask_model_only(): {question[:80]}...")
+    q, truncated = truncate_question(question)
+
+    prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        "Agent Question:\n"
+        f"{q}\n"
+    )
+
+    if verbose:
+        rag_logger.info(f"-- PROMPT (model-only) --\n{prompt}\n-- END PROMPT --")
+
+    answer = _hf_generate(prompt, temperature=0.3, max_new_tokens=768)
+
+    if truncated:
+        answer = "(Question truncated)\n\n" + answer
+
+    return str(answer or "").strip()
 
 # ------------------ Queueing (kept) ------------------
 
