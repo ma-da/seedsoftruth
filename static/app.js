@@ -7,8 +7,8 @@
    ========================================================= */
 const CFG = {
   // Version Info,
-  VERSION_NUM: "0.1",
-  VERSION_NAME: "Aardvark",
+  VERSION_NUM: "0.2",
+  VERSION_NAME: "Bunny",
 
   // LocalStorage keys
   LS_THEME: 'sot-theme',
@@ -209,7 +209,111 @@ async function typeIntoElement(textEl, fullText, opts = {}) {
   cursor.remove();
   scrollChatToBottom?.();
 }
+/*------ MARKDOWN HELPER------------------*/
 
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Very small markdown-to-HTML. Safe-ish because we escape first, then add a limited set of tags.
+function renderMiniMarkdown(md) {
+  // Input should be plain text (NOT HTML). We'll return safe-ish HTML.
+  let s = String(md ?? '');
+
+  // Normalize newlines
+  s = s.replace(/\r\n/g, '\n');
+
+  // ---------- Escape HTML first ----------
+  // (We will re-introduce only a/strong/em/code/br)
+  s = s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  // ---------- Helpers ----------
+  // Use placeholders so later formatting doesn't touch generated <a> tags.
+  const placeholders = [];
+  const put = (html) => {
+    const key = `\uE000${placeholders.length}\uE001`;
+    placeholders.push(html);
+    return key;
+  };
+  const restore = (text) =>
+    text.replace(/\uE000(\d+)\uE001/g, (_, i) => placeholders[Number(i)] ?? '');
+
+  const escapeAttr = (x) => String(x).replace(/"/g, '%22');
+
+  // ---------- Markdown links: [text](url) and [text](<url>) ----------
+  // Notes:
+  // - We stop url at whitespace OR ')' but allow common URL chars.
+  // - We also trim a trailing punctuation char if it "obviously" isn't part of the URL.
+  const linkRe = /\[([^\]\n]+)\]\(\s*(<)?(https?:\/\/[^\s)]+)(>)?\s*\)/g;
+  s = s.replace(linkRe, (m, text, _lt, url, _gt) => {
+    let u = url;
+
+    // Strip common trailing punctuation that is typically outside the URL
+    // e.g. "...(https://x.com)." -> remove trailing '.'
+    u = u.replace(/[.,;:!?]+$/g, '');
+
+    const safeUrl = escapeAttr(u);
+    const safeText = text; // already HTML-escaped above
+    return put(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeText}</a>`);
+  });
+
+  // ---------- Inline code: `code` ----------
+  // Do this before bold/italic so markers inside code aren't parsed.
+  s = s.replace(/`([^`\n]+)`/g, (m, code) => put(`<code>${code}</code>`));
+
+  // ---------- Bold: **text** ----------
+  // Use a non-greedy pattern and avoid crossing newlines.
+  s = s.replace(/\*\*([^\n*][\s\S]*?[^\n*])\*\*/g, '<strong>$1</strong>');
+
+  // ---------- Italic: *text* ----------
+  // Avoid italicizing inside words and avoid matching **bold** fragments.
+  // Also avoids matching lone '*' in things like pointers.
+  s = s.replace(/(^|[\s(])\*([^\n*][\s\S]*?[^\n*])\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
+
+  // ---------- Line breaks ----------
+  s = s.replace(/\n/g, '<br>');
+
+  // Restore protected HTML segments
+  return restore(s);
+}
+
+function decodeHtmlEntities(str) {
+  // Decodes &#...; &amp; &quot; etc
+  const txt = document.createElement('textarea');
+  txt.innerHTML = String(str ?? '');
+  return txt.value;
+}
+
+function cleanRagArtifacts(str) {
+  let s = String(str ?? '');
+
+  // Common LLM stop tokens / scaffolding
+  s = s.replace(/<\|im_end\|>/g, '');
+  s = s.replace(/<\/s>/g, '');
+  s = s.replace(/<\|endoftext\|>/g, '');
+
+  // Sometimes these appear HTML-escaped already
+  s = s.replace(/&lt;\|im_end\|&gt;/g, '');
+  s = s.replace(/&lt;\/s&gt;/g, '');
+  s = s.replace(/&lt;\|endoftext\|&gt;/g, '');
+
+  // Collapse weird whitespace
+  s = s.replace(/\r\n/g, '\n');
+  s = s.replace(/[ \t]+\n/g, '\n');
+  s = s.replace(/\n{3,}/g, '\n\n');
+
+  return s.trim();
+}
 
 /* =========================================================
    4) MODAL (custom alert/confirm)
@@ -351,20 +455,40 @@ function initMobileSidebar() {
 /* =========================================================
    7) TOOLS POPUP + TOOL STATE
    ========================================================= */
+
 function loadToolState() {
   try {
     const raw = localStorage.getItem(CFG.LS_TOOLS);
     if (!raw) return;
+
     const parsed = safeJsonParse(raw, {});
+
     if (typeof parsed.historyTurns === 'number') {
-      toolState.historyTurns = clampInt(parsed.historyTurns, 0, CFG.MAX_CONTEXT_TURNS, CFG.DEFAULT_HISTORY_TURNS);
+      toolState.historyTurns = clampInt(
+        parsed.historyTurns,
+        0,
+        CFG.MAX_CONTEXT_TURNS,
+        CFG.DEFAULT_HISTORY_TURNS
+      );
     }
-    if (['search','chat','ab'].includes(parsed.mode)) toolState.mode = parsed.mode;
+
+    if (['search', 'chat', 'ab'].includes(parsed.mode)) toolState.mode = parsed.mode;
+
+    // NEW: RAG toggle (default ON if missing)
+    if (typeof parsed.useRag === 'boolean') {
+      toolState.useRag = parsed.useRag;
+    } else if (typeof toolState.useRag !== 'boolean') {
+      toolState.useRag = true;
+    }
   } catch (_) {}
 }
 
 function saveToolState() {
-  try { localStorage.setItem(CFG.LS_TOOLS, JSON.stringify(toolState)); } catch (_) {}
+  // NEW: keep backwards compatibility + ensure useRag exists
+  if (typeof toolState.useRag !== 'boolean') toolState.useRag = true;
+  try {
+    localStorage.setItem(CFG.LS_TOOLS, JSON.stringify(toolState));
+  } catch (_) {}
 }
 
 function renderToolState() {
@@ -390,15 +514,29 @@ function renderToolState() {
       toolState.mode === 'ab'     ? 'A/B test two responses and select the best one' :
                                     'AI chat: normal chat mode';
   }
-  
+
   if (els.referencesTitle) {
     els.referencesTitle.textContent = (toolState.mode === 'search') ? 'Search Results' : 'References';
   }
 
+  // NEW: render RAG toggle state (do not affect conversation memory)
+  const ragToggle = els.ragToggle || document.getElementById('rag-toggle');
+  if (ragToggle) ragToggle.checked = !!toolState.useRag;
+
+  // Optional: update help text dynamically if you included #rag-help
+  const ragHelp = document.getElementById('rag-help');
+  if (ragHelp) {
+    ragHelp.textContent = toolState.useRag
+      ? 'Uses retrieved context (RAG) to ground responses.'
+      : 'Model-only: skips retrieval, but still uses conversation memory.';
+  }
 }
 
 function initToolsPopup() {
   if (!els.toolsBtn || !els.toolsPopup) return;
+
+  // Ensure we have the rag toggle element (works even if you didn't add to els)
+  if (!els.ragToggle) els.ragToggle = document.getElementById('rag-toggle');
 
   els.toolsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -414,7 +552,12 @@ function initToolsPopup() {
   // slider change
   if (els.historySlider) {
     els.historySlider.addEventListener('input', () => {
-      toolState.historyTurns = clampInt(els.historySlider.value, 0, CFG.MAX_CONTEXT_TURNS, CFG.DEFAULT_HISTORY_TURNS);
+      toolState.historyTurns = clampInt(
+        els.historySlider.value,
+        0,
+        CFG.MAX_CONTEXT_TURNS,
+        CFG.DEFAULT_HISTORY_TURNS
+      );
       renderToolState();
       saveToolState();
     });
@@ -442,6 +585,20 @@ function initToolsPopup() {
         renderToolState();
         saveToolState();
       });
+    });
+  }
+
+  // NEW: RAG toggle change
+  if (els.ragToggle) {
+    els.ragToggle.addEventListener('change', () => {
+      toolState.useRag = !!els.ragToggle.checked;
+      renderToolState(); // keeps help text in sync, harmless otherwise
+      saveToolState();
+
+      // Optional feedback
+      if (typeof pushStatusMessage === 'function') {
+        pushStatusMessage(toolState.useRag ? 'RAG enabled.' : 'RAG disabled (model-only).');
+      }
     });
   }
 }
@@ -949,24 +1106,31 @@ function linkifyPlainUrls(htmlStr) {
   });
 }
 
-function toHttpsUrl(u) {
-  const s = String(u || "").trim();
-  if (!s) return "";
-  if (/^https?:\/\//i.test(s)) return s;
-  return "https://" + s.replace(/^\/+/, "");
-}
+function toHttpsUrl(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return '';
 
-function looksLikeUrl(s) {
-  const t = String(s || "").trim();
-  if (!t) return false;
-  // allow full URLs
-  if (/^https?:\/\//i.test(t)) return true;
-  // allow domains/paths like www.wanttoknow.info/...
-  return /^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(t);
+  // If it's already a valid absolute URL, keep it
+  if (/^https?:\/\//i.test(s)) return s;
+
+  // Common escape sequences from JSON or stored strings
+  s = s.replace(/\\\//g, '/');  // turns https:\/\/ into https://
+
+  // Protocol-relative URLs
+  if (s.startsWith('//')) return 'https:' + s;
+
+  // "www.example.com/..." or "example.com/..."
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(s)) return 'https://' + s;
+
+  return '';
 }
 
 function getRefLink(ref) {
-  // Prefer explicit url, otherwise fall back to source if it looks like a URL
+  // Prefer new field names first
+  const su = String(ref?.source_url || "").trim();
+  if (su) return su;
+
+  // Back-compat
   const u = String(ref?.url || "").trim();
   if (u) return u;
 
@@ -1063,7 +1227,10 @@ function setReferences(refs) {
   els.referencesCount.textContent = list.length + ' item' + (list.length === 1 ? '' : 's');
 
   list.forEach((ref, idx) => {
-	console.log("REF", idx, Object.keys(ref), ref.url, ref.source, ref);  
+	if (idx === 0) {
+	  console.log("REF KEYS:", Object.keys(ref || {}));
+	  console.log("REF FULL:", ref);
+	}	  
     const card = document.createElement('article');
     card.className = 'ref-card';
 
@@ -1072,43 +1239,44 @@ function setReferences(refs) {
     const header = document.createElement('div');
     header.className = 'ref-header';
 
+    // --- NEW: left + right layout inside header ---
+    const left = document.createElement('div');
+    left.className = 'ref-left';
+
     const right = document.createElement('div');
     right.className = 'ref-right';
 
-    // ✅ clickable URL (green, top-right)
-	const linkText = getRefLink(ref);
-	const href = toHttpsUrl(linkText);
+    // "Found on {label}" link (top-left)
+    const foundLabel =
+      String(ref?.found_on || '').trim() ||
+      String(ref?.publisher || '').trim() ||
+      'Source';
 
-	const badge = document.createElement(linkText ? 'a' : 'span');
-	badge.className = 'ref-badge';
-	badge.textContent = ref.source || 'Corpus';
+	// Use source URL (prefer source_url, but fall back to source if it's blank)
+	const hrefRaw = (
+	  String(ref?.source_url || '').trim() ||
+	  String(ref?.source || '').trim()
+	);
+	const href = toHttpsUrl(hrefRaw);
+    // debugging 
+	if (idx === 0) console.log("source_url=", ref?.source_url, "source=", ref?.source);
+	console.log('found-on hrefRaw=', hrefRaw, 'href=', href);
 
-	if (linkText) {
-	  badge.href = href;
-	  badge.target = '_blank';
-	  badge.rel = 'noopener noreferrer';
-	  badge.addEventListener("click", (e) => e.stopPropagation());
-	}
+    const foundEl = document.createElement(href ? 'a' : 'span');
+    foundEl.className = 'ref-foundon';
+    foundEl.textContent = `Found on ${foundLabel}`;
 
-	if (ref.url) {
-	  const href = toHttpsUrl(String(ref.url).trim());
-	  badge.href = href;
-	  badge.target = '_blank';
-	  badge.rel = 'noopener noreferrer';
+    if (href) {
+      foundEl.href = href;
+      foundEl.target = '_blank';
+      foundEl.rel = 'noopener noreferrer';
+      foundEl.addEventListener('click', (e) => e.stopPropagation());
+    }
 
-	  // keep parent handlers from hijacking the click
-	  badge.addEventListener('click', (e) => {
-		e.stopPropagation();
-	  });
+    left.appendChild(foundEl);
+	console.log('foundEl tag=', href ? 'a' : 'span', 'hrefRaw=', hrefRaw, 'href=', href);
 
-	  // If something upstream still blocks navigation, use this instead:
-	  // badge.addEventListener('click', (e) => {
-	  //   e.stopPropagation();
-	  //   e.preventDefault();
-	  //   window.open(href, "_blank", "noopener,noreferrer");
-	  // });
-	}
-
+    // feedback button stays on the right
     const cbtn = document.createElement('button');
     cbtn.type = 'button';
     cbtn.className = 'comment-btn';
@@ -1122,35 +1290,78 @@ function setReferences(refs) {
     `;
     cbtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      const title = String(ref?.title || '').trim();
+      const snip = String(ref?.snippet || ref?.text || '').trim();
       openFeedbackModal({
         type: 'reference',
         id: refId,
-        snippet: (ref.title ? ref.title + ' — ' : '') + (ref.snippet || ''),
+        snippet: (title ? title + ' — ' : '') + snip,
         job_id: "none"
       });
     });
 
-    right.appendChild(badge);
     right.appendChild(cbtn);
 
+    header.appendChild(left);
     header.appendChild(right);
+
+    // Title line
+    const titleText = String(ref?.title || "").trim();
+    if (titleText) {
+      const t = document.createElement('div');
+      t.className = 'ref-title';
+      t.textContent = titleText;
+      header.appendChild(t);
+    }
+
+    // Optional meta line (date only; found_on already shown)
+    const metaBits = [];
+    const date = String(ref?.date || "").trim();
+    if (date) metaBits.push(date);
+
+    if (metaBits.length) {
+      const meta = document.createElement('div');
+      meta.className = 'ref-meta';
+      meta.textContent = metaBits.join(' • ');
+      header.appendChild(meta);
+    }
 
     const snippetEl = document.createElement('div');
     snippetEl.className = 'ref-snippet';
 
-    // Prefer server-rendered HTML, fall back to plain snippet/text
-    const raw = (ref.snippet ?? ref.text ?? ref.content ?? '');
-    const html1 = linkifyPlainUrls(raw);
-    const html2 = sanitizeBasicHtml(html1);
+    // Prefer HTML snippet if server provides it, else use plain snippet/text
 
-    snippetEl.innerHTML = html2;
+	// 1) Prefer plain text that still contains markdown
+	let rawText = String(ref?.snippet ?? ref?.text ?? ref?.content ?? '').trim();
 
-    // limit to 500 words displayed
-    truncateElementToWords(snippetEl, 500);
+	// 2) If we don't have plain text, fall back to server HTML (already escaped / linkified)
+	let rawHtml = String(ref?.snippet_html ?? '').trim();
+
+	if (rawText) {
+	  // IMPORTANT: do NOT decode &lt; &gt; here; keep it text.
+	  // Only clean RAG artifacts / weird tokens.
+	  rawText = cleanRagArtifacts(rawText);
+
+	  // Markdown -> HTML (your mini renderer escapes HTML)
+	  const mdHtml = renderMiniMarkdown(rawText);
+
+	  // Sanitize the result
+	  snippetEl.innerHTML = sanitizeBasicHtml(mdHtml);
+	} else if (rawHtml) {
+	  // If server HTML contains entities like &#x27; you can decode *safely*,
+	  // but do NOT decode into real tags that weren't intended.
+	  // In most cases: don't decode; just sanitize.
+	  rawHtml = cleanRagArtifacts(rawHtml);
+
+	  snippetEl.innerHTML = sanitizeBasicHtml(rawHtml);
+	} else {
+	  snippetEl.textContent = '';
+	}
+
+    truncateElementToWords(snippetEl, 600);
 
     card.appendChild(header);
     card.appendChild(snippetEl);
-
     els.referencesContainer.appendChild(card);
   });
 }
@@ -1496,7 +1707,8 @@ async function handleChatSubmit(e) {
     message: text,
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
-    context: contextTurns
+    context: contextTurns,
+	use_rag: !!toolState.useRag
   };
 
   // Start “busy” immediately so the user gets feedback right away
@@ -1523,7 +1735,8 @@ async function handleChatSubmit(e) {
         max_n: CFG.MAX_REFS,
         mode: 'search',
         history_turns: toolState.historyTurns,
-        context: contextTurns
+        context: contextTurns,
+		use_rag: !!toolState.useRag
       };
 
       console.log('[Search → Flask] payload:', searchPayload);
@@ -1544,14 +1757,24 @@ async function handleChatSubmit(e) {
         appendMessage(bot, 'bot');
         pushTurn(text, bot);
 
-        const refs = (Array.isArray(data.results) ? data.results : [])
-          .slice(0, CFG.MAX_REFS)
-          .map((r) => ({
-            title: r.title || r.source_title || 'Reference',
-            source: r.source || r.publication || 'Corpus',
-            snippet: r.snippet || r.text || r.excerpt || '',
-            url: r.url || r.link || ''
-          }));
+		const refs = (Array.isArray(data.results) ? data.results : [])
+		  .slice(0, CFG.MAX_REFS)
+		  .map((r) => ({
+			title: r.title || r.source_title || r.filename || 'Reference',
+
+			// New preferred fields:
+			source_url: r.source_url || r.url || r.link || "",
+			publisher: r.publisher || r.publication || r.source || "Corpus",
+			found_on: r.found_on || "",
+
+			// Snippet: prefer html if provided, else plain
+			snippet_html: r.snippet_html || "",
+			snippet: r.snippet || r.text || r.excerpt || "",
+
+			// Optional extras (harmless if absent)
+			date: r.date || r.Date || "",
+			dataset: r.dataset || ""
+		  }));
 
         setReferences(refs);
       } catch (err) {
@@ -2235,3 +2458,4 @@ document.addEventListener('DOMContentLoaded', init);
     spawn(e.clientX, e.clientY);
   }, { passive: true });
 })();
+
