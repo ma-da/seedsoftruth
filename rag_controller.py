@@ -635,6 +635,7 @@ async def ask_model_only(
         "Agent Question:\n"
         f"{q}\n"
     )
+    rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
     if verbose:
         rag_logger.info(f"-- PROMPT (model-only) --\n{prompt}\n-- END PROMPT --")
