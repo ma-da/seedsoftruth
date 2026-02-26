@@ -439,7 +439,7 @@ def ask_corpus(question: str) -> str:
     return (ans or "").strip()
 
 
-def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20):
+def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True):
     """
     Returns (answer: str, docs: list[dict])
 
@@ -458,12 +458,17 @@ def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20):
         return ("", [])
 
     async def _run():
-        # 1) LLM answer (rag_controller.ask does its own retrieval + context building)
-        answer = await rag_controller.ask(retrieval_state, q, verbose=False)
+        # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
+        if use_rag:
+            answer = await rag_controller.ask(retrieval_state, q, verbose=False)
+        else:
+            answer = await rag_controller.ask_model_only(retrieval_state, q, verbose=False)
+
         answer = str(answer or "").strip()
 
         # 2) Build retrieval text for references (query + answer)
-        #    Use rag_controller's cleaner to strip </s:1>Q: scaffolding etc.
+        if not use_rag:
+            return (answer, [])
         retrieval_text = (q + " " + answer).strip()
         try:
             retrieval_text = rag_controller.clean_retrieval_text(retrieval_text)
@@ -680,6 +685,8 @@ def api_chat():
         return locked
 
     payload = request.get_json(silent=True) or {}
+    use_rag = payload.get("use_rag", True)
+    use_rag = bool(use_rag)    
     msg = (payload.get("message") or payload.get("query") or "").strip()
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
@@ -756,7 +763,7 @@ def api_chat():
         inflight_chat_reqs.inc()
 
         # LLM model call goes here
-        answer, docs = chat_with_corpus(msg, top_k=10)
+        answer, docs = chat_with_corpus(msg, top_k=10, use_rag=use_rag)
 
         app_logger.info(f"Marking job {job_id} as done in db...")
         db.mark_done(job_id, answer)
@@ -812,6 +819,8 @@ def api_ab():
         return locked
 
     payload = request.get_json(silent=True) or {}
+    use_rag = payload.get("use_rag", True)
+    use_rag = bool(use_rag)
     msg = (payload.get("message") or payload.get("query") or "").strip()
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
@@ -898,11 +907,11 @@ def api_ab():
 
     try:
         # A
-        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k)
+        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag)
 
         # B (alternate phrasing prompt)
         b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
-        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k)
+        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag)
 
         app_logger.info(f"Marking job {job_id_a} as done in db...")
         db.mark_done(job_id_a, a_answer)
