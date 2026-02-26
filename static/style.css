@@ -772,6 +772,13 @@ body.light .references-count{ color: var(--muted-light); }
 }
 
 /* Individual card */
+.ref-foundon {
+  pointer-events: auto;
+  cursor: pointer;
+  display: inline-block;
+  text-decoration: underline;
+}
+
 .ref-card{
   box-sizing: border-box;
   position: relative;
@@ -1032,6 +1039,90 @@ body.light .tools-button--inset:hover{
   filter: none !important;
 }
 
+/* ----- Tools row layout (label + control) ----- */
+.tools-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.tools-row-text{
+  min-width: 0;
+}
+
+.tools-row-label{
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+body.light .tools-row-label{
+  color: var(--text-light);
+}
+
+/* ----- Toggle switch ----- */
+.toggle{
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Hide the checkbox but keep it accessible */
+.toggle-input{
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+/* The pill */
+.toggle-track{
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(148,163,184,0.25); /* slate-ish in dark */
+  border: 1px solid rgba(148,163,184,0.25);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* The knob */
+.toggle-track::after{
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.92);
+  transition: transform 0.15s ease;
+}
+
+/* ON state */
+.toggle-input:checked + .toggle-track{
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-input:checked + .toggle-track::after{
+  transform: translateX(18px);
+}
+
+/* Focus ring (keyboard) */
+.toggle-input:focus-visible + .toggle-track{
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.35);
+}
+
+/* Light mode tuning */
+body.light .toggle-track{
+  background: rgba(15,23,42,0.08);
+  border-color: rgba(15,23,42,0.10);
+}
+body.light .toggle-track::after{
+  background: #fff;
+}
 
 .chat-input{
   width: 100%;
