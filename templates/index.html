@@ -67,7 +67,7 @@
       <div class="sidebar-scroll">
         <!-- Status -->
         <div>
-          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-qwen3-beta-slim-merged-v4-A" target="_blank">Model v4a</a>, <a href="https://freemindgazette.substack.com/p/planting-seeds-of-truth" target="_blank">Beta Slim dataset</a></div> 
+          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-trineday-mini-llama3-70b-lora-v7" target="_blank">Model v7</a>, <a href="https://github.com/ma-da/seedsoftruth/tree/main/data/trineday_mini" target="_blank">Trineday Mini dataset</a></div> 
 
           <div class="status-panel">
             <div class="status-row">
@@ -234,6 +234,34 @@
 					  Includes up to <b id="history-help-n">2</b> previous Q/A turns in the next request.
 					</div>
 				  </div>
+				  
+					<div class="tools-divider" aria-hidden="true"></div>
+
+					<!-- RAG -->
+					<div class="tools-section">
+					  <div class="tools-section-title">Retrieval</div>
+
+					  <div class="tools-row">
+						<div class="tools-row-text">
+						  <div class="tools-row-label">Use RAG context</div>
+						  <div class="tools-help" id="rag-help">
+							When off, queries the LoRA model directly (no retrieval).
+						  </div>
+						</div>
+
+						<div class="toggle">
+						  <input
+							type="checkbox"
+							id="rag-toggle"
+							class="toggle-input"
+							checked
+							aria-describedby="rag-help"
+						  />
+						  <label for="rag-toggle" class="toggle-track" aria-label="Toggle RAG"></label>
+						</div>
+					  </div>
+					</div>				  
+				  
 				</div>
 			  </div>
 			</div>
@@ -495,4 +523,3 @@
 
 </body>
 </html>
-
