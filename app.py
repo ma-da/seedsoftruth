@@ -496,7 +496,8 @@ def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bo
 
         docs = []
         if isinstance(pack, dict):
-            docs = pack.get("results", []) or []
+            results = pack.get("results", []) or []
+            docs = results
         elif isinstance(pack, list):
             docs = pack
 

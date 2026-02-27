@@ -24,6 +24,7 @@ import requests
 import bm25s
 
 import logging_config
+import rag_cleaner
 
 rag_logger = logging_config.get_logger("rag")
 
@@ -405,10 +406,16 @@ def build_context(
     blocks: List[str] = []
 
     picked = (docs or [])[: int(context_k)]
+    i = 0
     for d in picked:
         text = (d.get("text") or d.get("snippet") or "").strip()
         if not text:
             continue
+        i = i + 1
+        rag_logger.info(f"building context pre-text for doc {i}: {text}")
+
+        text = rag_cleaner.clean_text_for_rag(text)
+        rag_logger.info(f"building context cleaned-text for doc {i}: {text}")
 
         sents = _sentence_split(text)[: int(max_sent_per_doc)]
         kept: List[str] = []
@@ -440,6 +447,130 @@ def build_context(
             "<snippets>\n- " + "\n- ".join(kept) + "\n</snippets>\n"
             "</doc>"
         )
+        blocks.append(block)
+
+    return "\n".join(blocks)
+
+
+def build_context_improved(
+    docs: List[Dict[str, Any]],
+    query: str,
+    *,
+    context_k: int = 5,
+    max_snips_per_doc: int = 5,
+    max_sent_per_doc: int = 50,
+    window_radius: int = 1,  # include ±1 neighboring sentence
+) -> str:
+
+    terms = _to_term_set(query)
+    global_tris: set[str] = set()
+    blocks: List[str] = []
+
+    picked = (docs or [])[: int(context_k)]
+
+    for i, d in enumerate(picked, start=1):
+        text = (d.get("text") or d.get("snippet") or "").strip()
+        if not text:
+            continue
+
+        rag_logger.info(f"building context pre-text for doc {i}: {text}")
+
+        text = rag_cleaner.clean_text_for_rag(text)
+        rag_logger.info(f"building context cleaned-text for doc {i}: {text}")
+
+        sents = _sentence_split(text)[: int(max_sent_per_doc)]
+        if not sents:
+            continue
+
+        # ----------------------------
+        # 1️⃣ Score all sentences
+        # ----------------------------
+
+        scored_indices = []
+
+        for idx, s in enumerate(sents):
+            low = s.lower()
+            sent_tokens = set(_tokenize_simple(low))
+
+            overlap = len(terms & sent_tokens)
+            if overlap == 0:
+                continue
+
+            # simple score: term overlap count
+            score = overlap
+
+            scored_indices.append((idx, score))
+
+        if not scored_indices:
+            continue
+
+        # Sort by descending score
+        scored_indices.sort(key=lambda x: x[1], reverse=True)
+
+        # Keep top sentence indices
+        top_indices = [idx for idx, _ in scored_indices[:max_snips_per_doc]]
+
+        # ----------------------------
+        # 2️⃣ Expand windows
+        # ----------------------------
+
+        windows = []
+
+        for idx in top_indices:
+            start = max(0, idx - window_radius)
+            end = min(len(sents), idx + window_radius + 1)
+            windows.append((start, end))
+
+        # ----------------------------
+        # 3️⃣ Merge overlapping windows
+        # ----------------------------
+
+        windows.sort()
+        merged = []
+
+        for start, end in windows:
+            if not merged:
+                merged.append([start, end])
+            else:
+                prev_start, prev_end = merged[-1]
+                if start <= prev_end:
+                    merged[-1][1] = max(prev_end, end)
+                else:
+                    merged.append([start, end])
+
+        # ----------------------------
+        # 4️⃣ Build kept text with trigram diversity
+        # ----------------------------
+
+        kept_blocks: List[str] = []
+
+        for start, end in merged:
+            window_text = " ".join(sents[start:end]).strip()
+
+            toks = _tokenize_simple(window_text)
+            tris = _trigrams(toks)
+
+            # Check if window introduces novelty
+            introduce = any(tri not in global_tris for tri in tris)
+
+            if introduce:
+                kept_blocks.append(window_text)
+                for tri in tris:
+                    global_tris.add(tri)
+
+        if not kept_blocks:
+            continue
+
+        doc_id = d.get("row_id") or d.get("title") or ""
+        url = d.get("source") or ""
+        score = d.get("score_bm25") or 0.0
+
+        block = (
+            f'<doc id="{doc_id}" url="{url}" score="{float(score):.2f}">\n'
+            "<snippets>\n- " + "\n- ".join(kept_blocks) + "\n</snippets>\n"
+            "</doc>"
+        )
+
         blocks.append(block)
 
     return "\n".join(blocks)
@@ -596,7 +727,8 @@ async def ask(state: RetrievalState, question: str, *, context_k: int = 5, top_k
     t0 = time.time()
     refs = await search_references(state, q, top_k=top_k, verbose=verbose)
     docs = refs.get("results", [])
-    context = build_context(docs, q, context_k=context_k)
+    context = build_context_improved(docs, q, context_k=context_k)
+    rag_logger.info(f"chat search_references results: {docs}")
 
     if verbose:
         rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
