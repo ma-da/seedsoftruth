@@ -720,7 +720,13 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
 
     raise RuntimeError(f"HF model still loading (503). Last: {last_detail or 'n/a'}")
 
-async def ask(state: RetrievalState, question: str, *, context_k: int = 5, top_k: int = 10, verbose: bool = True) -> str:
+async def ask(state: RetrievalState,
+              question: str,
+              *,
+              context_k: int = 5,
+              top_k: int = 10,
+              verbose: bool = True,
+              use_double_prompt = False) -> str:
     rag_logger.info(f"ask(): {question[:80]}...")
     q, truncated = truncate_question(question)
 
@@ -733,13 +739,24 @@ async def ask(state: RetrievalState, question: str, *, context_k: int = 5, top_k
     if verbose:
         rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
 
-    prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        "Agent Question:\n"
-        f"{q}\n\n"
-        "DOCUMENTS (internal — do not mention they exist):\n"
-        f"{context}"
-    )
+    if use_double_prompt:
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Agent Question:\n"
+            f"{q}\n"
+            f"{q}\n\n"
+            "DOCUMENTS (internal — do not mention they exist):\n"
+            f"{context}"
+        )
+    else:
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Agent Question:\n"
+            f"{q}\n\n"
+            "DOCUMENTS (internal — do not mention they exist):\n"
+            f"{context}"
+        )
+
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
     answer = _hf_generate(prompt, temperature=0.3, max_new_tokens=768)
@@ -754,6 +771,7 @@ async def ask_model_only(
     question: str,
     *,
     verbose: bool = True,
+    use_double_prompt = False,
 ) -> str:
     """
     Model-only answer: NO retrieval, NO documents injected.
@@ -762,11 +780,20 @@ async def ask_model_only(
     rag_logger.info(f"ask_model_only(): {question[:80]}...")
     q, truncated = truncate_question(question)
 
-    prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        "Agent Question:\n"
-        f"{q}\n"
-    )
+    if use_double_prompt:
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Agent Question:\n"
+            f"{q}\n"
+            f"{q}\n"
+        )
+    else:
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Agent Question:\n"
+            f"{q}\n"
+        )
+
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
     if verbose:

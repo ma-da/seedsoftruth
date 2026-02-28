@@ -96,6 +96,9 @@ EASTERN_TZ = ZoneInfo("America/New_York")
 START_TIME = time(9, 0)   # 9:00 AM
 END_TIME   = time(22, 0)  # 10:00 PM
 
+# features flags
+USE_DOUBLE_PROMPT = True
+
 
 # ------------------ Password gating ------------------
 
@@ -242,7 +245,7 @@ def worker_body():
 
         try:
             app_logger.info(f"Worker chat_with_corpus for job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
-            answer, docs = chat_with_corpus(queued_job.prompt, top_k=10)
+            answer, docs = chat_with_corpus(queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
 
             resp = rag_controller.QueuedResponse(
                 ok=True,
@@ -439,7 +442,7 @@ def ask_corpus(question: str) -> str:
     return (ans or "").strip()
 
 
-def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True):
+def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True, use_double_prompt = False) -> Dict[str, Any]:
     """
     Returns (answer: str, docs: list[dict])
 
@@ -460,9 +463,9 @@ def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bo
     async def _run():
         # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
         if use_rag:
-            answer = await rag_controller.ask(retrieval_state, q, verbose=False)
+            answer = await rag_controller.ask(retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
         else:
-            answer = await rag_controller.ask_model_only(retrieval_state, q, verbose=False)
+            answer = await rag_controller.ask_model_only(retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
 
         answer = str(answer or "").strip()
 
@@ -764,7 +767,7 @@ def api_chat():
         inflight_chat_reqs.inc()
 
         # LLM model call goes here
-        answer, docs = chat_with_corpus(msg, top_k=10, use_rag=use_rag)
+        answer, docs = chat_with_corpus(msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         app_logger.info(f"Marking job {job_id} as done in db...")
         db.mark_done(job_id, answer)
@@ -908,11 +911,11 @@ def api_ab():
 
     try:
         # A
-        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag)
+        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         # B (alternate phrasing prompt)
         b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
-        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag)
+        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         app_logger.info(f"Marking job {job_id_a} as done in db...")
         db.mark_done(job_id_a, a_answer)
