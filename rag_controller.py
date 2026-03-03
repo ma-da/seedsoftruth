@@ -25,6 +25,8 @@ import bm25s
 
 import logging_config
 import rag_cleaner
+import model_adapters
+import utils
 
 rag_logger = logging_config.get_logger("rag")
 
@@ -33,17 +35,6 @@ rag_logger = logging_config.get_logger("rag")
 MAX_QUESTION_WORDS = 400
 TOP_DOCS = 5
 
-SYSTEM_PROMPT = """
-Answer the question in 1–3 concise paragraphs (total <300 words).
-Use proper spelling, punctuation, and spacing.
-Do not run words together.
-Avoid long strings of numbers.
-NO LISTS. If unavoidable, then limit lists to 3 items maximum.
-Focus only on the question asked, avoiding unrelated topics or meta-text (e.g., "Note:", "click here").
-Do not suggest other references, "further reading", or "Note:" for the reader to explore, view, or to learn more.
-Stop after the answer.
-/no_think
-""".strip()
 
 # --- Data paths (override via env) ---
 TRINEDAY_DATA_DIR = Path(os.getenv("TRINEDAY_DATA_DIR", "./data/trineday_mini"))
@@ -578,32 +569,24 @@ def build_context_improved(
 
 # ------------------ HF ORCHESTRATION (unchanged from your version) ------------------
 
-# endpoint wtk-trineday-mini-llama3-70b-muu
-HF_ENDPOINT_URL = "https://d6pfgv6yisy4pld2.us-east-1.aws.endpoints.huggingface.cloud" #os.getenv("HF_ENDPOINT_URL", "").strip()
+llm_model = model_adapters.LLMFactory.create("hf")
 
-HF_API_KEY = os.getenv("HF_API_KEY", "").strip()
-HF_TIMEOUT = int(os.getenv("HF_TIMEOUT_SECS", "900"))
-HF_MAX_ATTEMPTS = int(os.getenv("HF_MAX_ATTEMPTS", "10"))
-HF_MAX_WAIT_SECS = int(os.getenv("HF_MAX_WAIT_SECS", "6"))
-HF_WARMUP_PROMPT = "Q: [warmup] A:"
-HF_WARMUP_MAX_NEW_TOKENS = 16
-HF_MAX_ALLOWED_NEW_TOKENS = 1200
+def is_model_ready(timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
+    return utils.do_async_to_sync(
+        lambda: llm_model.is_model_ready(timeout=timeout)
+    )()
 
-HF_REQ_HEADERS = {
-    "Authorization": f"Bearer {HF_API_KEY}",
-    "Content-Type": "application/json",
-}
+def send_warmup() -> bool:
+    return utils.do_async_to_sync(
+        lambda: llm_model.send_warmup()
+    )()
 
-HF_HEALTH_PAYLOAD = {"inputs": "health_check"}
-HF_REQ_TIMEOUT_SECS = 5
-
-
-async def is_model_ready(timeout=HF_REQ_TIMEOUT_SECS) -> bool:
+async def is_model_ready_deprecated(timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
     rag_logger.info("checking health...")
     try:
-        r = requests.post(f"{HF_ENDPOINT_URL}",
-                          headers=HF_REQ_HEADERS,
-                          json=HF_HEALTH_PAYLOAD,
+        r = requests.post(f"{model_adapters.HF_ENDPOINT_URL}",
+                          headers=model_adapters.HF_REQ_HEADERS,
+                          json=model_adapters.HF_HEALTH_PAYLOAD,
                           timeout=timeout)
         if r.status_code == 200:
             if r.json().get("health") == "ok":
@@ -629,20 +612,20 @@ async def is_model_ready(timeout=HF_REQ_TIMEOUT_SECS) -> bool:
         return False
 
 
-async def send_warmup() -> bool:
+async def send_warmup_deprecated() -> bool:
     payload = {
-        "inputs": HF_WARMUP_PROMPT,
+        "inputs": model_adapters.HF_WARMUP_PROMPT,
         "parameters": {
-            "max_new_tokens": HF_WARMUP_MAX_NEW_TOKENS,
+            "max_new_tokens": model_adapters.HF_WARMUP_MAX_NEW_TOKENS,
             "temperature": 0.1,
             "stop_sequences": ["\n", "Q:"]
         }
     }
     try:
         r = requests.post(
-            f"{HF_ENDPOINT_URL}/generate",
+            f"{model_adapters.HF_ENDPOINT_URL}/generate",
             json=payload,
-            headers=HF_REQ_HEADERS,
+            headers=model_adapters.HF_REQ_HEADERS,
             timeout=60
         )
         if r.status_code == 200:
@@ -654,7 +637,7 @@ async def send_warmup() -> bool:
     return False
 
 
-def _parse_hf_text(data) -> str:
+def _parse_hf_text_deprecated(data) -> str:
     if isinstance(data, list) and data and isinstance(data[0], dict):
         if data[0].get("generated_text"):
             return str(data[0]["generated_text"])
@@ -671,14 +654,14 @@ def _parse_hf_text(data) -> str:
         return data
     return str(data)
 
-def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str:
-    if not HF_ENDPOINT_URL:
+def _hf_generate_deprecated(prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+    if not model_adapters.HF_ENDPOINT_URL:
         raise RuntimeError("Missing HF_ENDPOINT_URL")
-    if not HF_API_KEY:
+    if not model_adapters.HF_API_KEY:
         raise RuntimeError("Missing HF_API_KEY")
 
     headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
+        "Authorization": f"Bearer {model_adapters.HF_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -693,8 +676,8 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
 
     last_detail = None
 
-    for attempt in range(1, HF_MAX_ATTEMPTS + 1):
-        r = requests.post(HF_ENDPOINT_URL, headers=headers, json=payload, timeout=HF_TIMEOUT)
+    for attempt in range(1, model_adapters.HF_MAX_ATTEMPTS + 1):
+        r = requests.post(model_adapters.HF_ENDPOINT_URL, headers=headers, json=payload, timeout=model_adapters.HF_TIMEOUT)
 
         if r.status_code == 503:
             try:
@@ -702,9 +685,9 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
             except Exception:
                 j = {}
             wait = int(j.get("estimated_time") or 3)
-            wait = max(1, min(HF_MAX_WAIT_SECS, wait))
+            wait = max(1, min(model_adapters.HF_MAX_WAIT_SECS, wait))
             time.sleep(wait)
-            last_detail = f"503 loading; wait={wait}s; attempt={attempt}/{HF_MAX_ATTEMPTS}"
+            last_detail = f"503 loading; wait={wait}s; attempt={attempt}/{model_adapters.HF_MAX_ATTEMPTS}"
             continue
 
         if not r.ok:
@@ -716,7 +699,7 @@ def _hf_generate(prompt: str, *, temperature: float, max_new_tokens: int) -> str
         except Exception:
             raise RuntimeError(f"HF returned non-JSON: {(r.text or '')[:2000]}")
 
-        return _parse_hf_text(data).strip()
+        return _parse_hf_text_deprecated(data).strip()
 
     raise RuntimeError(f"HF model still loading (503). Last: {last_detail or 'n/a'}")
 
@@ -727,6 +710,8 @@ async def ask(state: RetrievalState,
               top_k: int = 10,
               verbose: bool = True,
               use_double_prompt = False) -> str:
+    global llm_model
+
     rag_logger.info(f"ask(): {question[:80]}...")
     q, truncated = truncate_question(question)
 
@@ -741,7 +726,7 @@ async def ask(state: RetrievalState,
 
     if use_double_prompt:
         prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{model_adapters.SYSTEM_PROMPT}\n\n"
             "Agent Question:\n"
             f"{q}\n"
             f"{q}\n\n"
@@ -750,7 +735,7 @@ async def ask(state: RetrievalState,
         )
     else:
         prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{model_adapters.SYSTEM_PROMPT}\n\n"
             "Agent Question:\n"
             f"{q}\n\n"
             "DOCUMENTS (internal — do not mention they exist):\n"
@@ -759,7 +744,7 @@ async def ask(state: RetrievalState,
 
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
-    answer = _hf_generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = llm_model.generate(prompt, temperature=0.3, max_new_tokens=768)
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer
@@ -773,6 +758,8 @@ async def ask_model_only(
     verbose: bool = True,
     use_double_prompt = False,
 ) -> str:
+    global llm_model
+
     """
     Model-only answer: NO retrieval, NO documents injected.
     Still applies truncate_question and uses the same SYSTEM_PROMPT.
@@ -782,14 +769,14 @@ async def ask_model_only(
 
     if use_double_prompt:
         prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{model_adapters.SYSTEM_PROMPT}\n\n"
             "Agent Question:\n"
             f"{q}\n"
             f"{q}\n"
         )
     else:
         prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{model_adapters.SYSTEM_PROMPT}\n\n"
             "Agent Question:\n"
             f"{q}\n"
         )
@@ -799,7 +786,7 @@ async def ask_model_only(
     if verbose:
         rag_logger.info(f"-- PROMPT (model-only) --\n{prompt}\n-- END PROMPT --")
 
-    answer = _hf_generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = llm_model.generate(prompt, temperature=0.3, max_new_tokens=768)
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer

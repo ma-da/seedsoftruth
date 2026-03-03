@@ -40,7 +40,6 @@ from numpy.ma.core import true_divide
 
 import rag_controller
 
-from asgiref.sync import async_to_sync  # pip install asgiref
 from flask import Flask, render_template, request, jsonify, session, abort
 
 import traceback
@@ -118,24 +117,6 @@ def _require_unlocked():
         return jsonify({"ok": False, "error": "locked", "message": "Not today"}), 403
     return None
 
-
-# ------------------ Async bridge helpers ------------------
-
-def _async_to_sync(async_fn):
-    """
-    Convert an async function (no args) to sync call.
-    Prefers asgiref, which is the most reliable for sync Flask under gunicorn.
-    """
-    try:
-        return async_to_sync(async_fn)
-    except Exception as e:
-        app_logger.error("Exception path in _async_to_sync, details: {e}")
-        # fallback: run in a fresh event loop (ok for dev; not ideal at scale)
-        import asyncio
-        def _runner():
-            return asyncio.run(async_fn())
-
-        return _runner
 
 
 # ------------------ Retrieval state (boot + ensure) ------------------
@@ -220,7 +201,7 @@ def worker_body():
             worker_no_queued_job_interval = 0
 
         app_logger.info("Background worker making health request")
-        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+        model_ready = rag_controller.is_model_ready()
         if not model_ready:
             model_not_ready_interval = model_not_ready_interval + 1
             worker_ready_report = False
@@ -394,7 +375,7 @@ def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
             verbose=False,
         )
 
-    out = _async_to_sync(_run)() or {}
+    out = utils.do_async_to_sync(_run)() or {}
     if not isinstance(out, dict):
         return {"results": [], "num_results": 0, "query": query}
 
@@ -438,7 +419,7 @@ def ask_corpus(question: str) -> str:
             verbose=False,
         )
 
-    ans = _async_to_sync(_run)()
+    ans = utils.do_async_to_sync(_run)()
     return (ans or "").strip()
 
 
@@ -509,7 +490,7 @@ def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bo
 
         return (answer, docs[: max(0, int(top_k) or 0)])
 
-    return async_to_sync(_run)()
+    return utils.do_async_to_sync(_run)()
 
 
 # ------------------ Routes: UI ------------------
@@ -741,13 +722,13 @@ def api_chat():
             "detail": str(e),
         }), 500
 
-    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    model_ready = rag_controller.is_model_ready()
     if not model_ready or force_queue:
         preview_msg = msg[:40]
         app_logger.warning(f"Model is not ready. Queueing msg for user {user_id}. Msg: {preview_msg}...  ")
 
         # send wake-up request to model
-        _async_to_sync(rag_controller.send_warmup)()
+        rag_controller.send_warmup()
         rag_controller.queue_job(user_id, job_id, msg)
 
         return jsonify({
@@ -848,13 +829,13 @@ def api_ab():
 
     # model must be ready for AB test
     app_logger.info(f"Health request received: user_id '{user_id}'")
-    model_ready = _async_to_sync(rag_controller.is_model_ready)()
+    model_ready = rag_controller.is_model_ready()
     if not model_ready:
         preview_msg = msg[:40]
         app_logger.warning(f"Model is not ready. AB test unavailable for message '{preview_msg}...'")
 
         # send wake-up request to model
-        _async_to_sync(rag_controller.send_warmup)()
+        rag_controller.send_warmup()
 
         return jsonify({
             "ok": False,
@@ -1018,7 +999,7 @@ def api_status():
     is_within_hours = is_within_service_hours()
     if health and is_within_hours:
         app_logger.info("status health checked")
-        model_ready = _async_to_sync(rag_controller.is_model_ready)()
+        model_ready = rag_controller.is_model_ready()
     else:
         app_logger.info("status health unchecked")
         model_ready = "unchecked"

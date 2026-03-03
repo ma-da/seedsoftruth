@@ -3,7 +3,7 @@ import logging
 import sys
 from pathlib import Path
 
-LOG_PATH = Path("logs/log.db")
+LOG_PATH = Path("logs/sot.log")
 _setup_logging_done = False
 
 def setup_logging(level=logging.INFO):

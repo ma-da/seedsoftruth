@@ -3,7 +3,11 @@ Contains helpful utilities for use by other files
 """
 import time
 import threading
+import logging_config
 
+utils_logger = logging_config.get_logger("utils")
+
+from asgiref.sync import async_to_sync  # pip install asgiref
 
 def str_to_bool(s: str, strict = True) -> bool:
     if not isinstance(s, str):
@@ -141,3 +145,23 @@ def get_payload_bool(payload, key, default=False):
             return False
 
     return default
+
+
+# ------------------ Async bridge helpers ------------------
+
+def do_async_to_sync(async_fn):
+    """
+    Convert an async function (no args) to sync call.
+    Prefers asgiref, which is the most reliable for sync Flask under gunicorn.
+    """
+    try:
+        return async_to_sync(async_fn)
+    except Exception as e:
+        utils_logger.error("Exception path in _async_to_sync, details: {e}")
+        # fallback: run in a fresh event loop (ok for dev; not ideal at scale)
+        import asyncio
+        def _runner():
+            return asyncio.run(async_fn())
+
+        return _runner
+
