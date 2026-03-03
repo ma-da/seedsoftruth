@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Protocol, Optional
+from typing import Protocol, Optional, Any, List
 import os
 import requests
 import time
@@ -8,6 +8,8 @@ import logging_config
 # --- Shared params ---
 DEFAULT_MAX_TOKENS = 768
 DEFAULT_TEMPERATURE = 0.3
+
+MODEL_TIMEOUT_SECS = 5
 
 SYSTEM_PROMPT = """
 Answer the question in 1–3 concise paragraphs (total <300 words).
@@ -42,8 +44,13 @@ HF_REQ_HEADERS = {
 }
 
 HF_HEALTH_PAYLOAD = {"inputs": "health_check"}
-MODEL_TIMEOUT_SECS = 5
 
+# -- Deep Infra params --
+
+DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/inference"      # should end with slash
+DEEPINFRA_DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+
+LLAMA3_STOP: List[str] = ["<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"]
 
 # -- Base LLM strategy --
 # This class is the base class which contains common methods for all strategies.
@@ -51,16 +58,21 @@ MODEL_TIMEOUT_SECS = 5
 class LLMStrategy(ABC):
 
     # --- Common Template ---
-    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+    def generate_impl(self, endpoint: str, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
         last_detail = None
+
+        if len(endpoint) < 1:
+            raise RuntimeError("Missing endpoint")
 
         self.prevalidate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
 
         for attempt in range(1, HF_MAX_ATTEMPTS + 1):
             headers = self.generate_header()
-            payload = self.generate_payload(prompt, temperature=temperature)
+            payload = self.generate_payload(prompt,
+                                            temperature=temperature,
+                                            max_new_tokens=max_new_tokens)
 
-            r = requests.post(HF_ENDPOINT_URL, headers=headers, json=payload, timeout=HF_TIMEOUT)
+            r = requests.post(endpoint, headers=headers, json=payload, timeout=HF_TIMEOUT)
 
             if r.status_code == 503:
                 try:
@@ -87,6 +99,16 @@ class LLMStrategy(ABC):
         raise RuntimeError(f"HF model still loading (503). Last: {last_detail or 'n/a'}")
 
     # --- Custom hooks to be customized per strategy --
+
+    # Get name of model adapter
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+
+    # Calls to generate_impl while passing endpoint
+    @abstractmethod
+    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+        raise NotImplementedError
 
     # Does prevalidation of params
     @abstractmethod
@@ -141,6 +163,12 @@ class HFEndpointLLM(LLMStrategy):
     def __init__(self, endpoint_url: str, api_key: str):
         self.endpoint_url = endpoint_url
         self.api_key = api_key
+
+    def name(self) -> str:
+        return "huggingface_adapter"
+
+    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+        return self.generate_impl(self.endpoint_url, prompt, temperature=temperature, max_new_tokens=max_new_tokens)
 
     def prevalidate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> str:
         if not self.endpoint_url:
@@ -248,11 +276,184 @@ class HFEndpointLLM(LLMStrategy):
         return False
 
 
+
+class DeepInfraLlamaLLM(LLMStrategy):
+    """
+    Adapter for DeepInfra native inference endpoint for Llama instruct models:
+      POST https://api.deepinfra.com/v1/inference/{model}
+    Request example in prompt:
+      { "input": "...", "stop": [...] }
+    Response example in prompt:
+      { "results": [ { "generated_text": "..." } ], ... }
+    """
+
+    def __init__(
+            self,
+            *,
+            api_token: str,
+            model: str = DEEPINFRA_DEFAULT_MODEL,
+            base_url: str = DEEPINFRA_BASE_URL,
+    ):
+        self.api_token = api_token
+        self.model = model
+        self.endpoint_url = f"{base_url.rstrip('/')}/{model}"
+
+        # Optional: allow callers to override stop list
+        self.stop = LLAMA3_STOP
+
+    def name(self) -> str:
+        return "deepinfra_llama_adapter"
+
+    # ---- core hook: route through base generate_impl() ----
+    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+        # uses your shared retry / 503 handling logic
+        return self.generate_impl(
+            self.endpoint_url,
+            prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+        )
+
+    # ---- validation ----
+    def prevalidate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> str:
+        if not self.endpoint_url:
+            raise RuntimeError("Missing DeepInfra endpoint_url")
+        if not self.api_token:
+            raise RuntimeError("Missing DEEPINFRA_TOKEN / api_token")
+        if not self.model:
+            raise RuntimeError("Missing DeepInfra model id")
+
+        if not isinstance(max_new_tokens, int) or max_new_tokens < 1:
+            raise RuntimeError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
+
+        t = float(temperature)
+        if t < 0.0 or t > 2.0:
+            raise RuntimeError(f"temperature must be in [0, 2], got {temperature}")
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise RuntimeError("prompt must be a non-empty string")
+
+    # ---- request building ----
+    def generate_header(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def _llama3_instruct_wrap(self, user_text: str) -> str:
+        """
+        DeepInfra expects the raw 'input' string. For Llama-3.x Instruct, your curl uses
+        the tokenized chat wrapper. We auto-wrap unless the caller already provided it.
+        """
+        s = (user_text or "").strip()
+
+        # Pass-through if user already supplied a fully wrapped conversation
+        if "<|begin_of_text|>" in s or "<|start_header_id|>" in s:
+            return s
+
+        return (
+            "<|begin_of_text|>"
+            "<|start_header_id|>user<|end_header_id|>\n\n"
+            f"{s}"
+            "<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+
+    def generate_payload(
+            self,
+            prompt: str,
+            *,
+            max_new_tokens: int = DEFAULT_MAX_TOKENS,
+            temperature: float = DEFAULT_TEMPERATURE,
+    ) -> dict[str, Any]:
+        # Important: your base generate_impl currently calls generate_payload(prompt, temperature=...)
+        # and does NOT pass max_new_tokens, so we must *not rely* on that param being provided.
+        #
+        # If you want max_new_tokens to take effect, update generate_impl to pass it through:
+        #   payload = self.generate_payload(prompt, temperature=temperature, max_new_tokens=max_new_tokens)
+        #
+        # Meanwhile: we keep defaults here; callers can still embed constraints in prompt if needed.
+        return {
+            "input": self._llama3_instruct_wrap(prompt),
+            "stop": list(self.stop),
+            "temperature": float(temperature),
+            "max_new_tokens": int(max_new_tokens),
+        }
+
+    # ---- response parsing ----
+    def parse_results_text(self, data) -> str:
+        # Expected DeepInfra shape:
+        # { "results": [ { "generated_text": "..." } ], ... }
+        if isinstance(data, dict):
+            results = data.get("results")
+            if isinstance(results, list) and results:
+                r0 = results[0] or {}
+                txt = r0.get("generated_text")
+                if isinstance(txt, str):
+                    return txt
+
+        # Defensive fallbacks (handy if DeepInfra changes shape or errors leak through)
+        if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
+            return data["generated_text"]
+        if isinstance(data, str):
+            return data
+        return str(data)
+
+    # ---- readiness / warmup ----
+    async def is_model_ready(self, timeout=MODEL_TIMEOUT_SECS) -> bool:
+        """
+        Best-effort check: issue a tiny request with a short timeout.
+        DeepInfra doesn't guarantee a separate health endpoint for inference models.
+        """
+        try:
+            headers = self.generate_header()
+            payload = {
+                "input": self._llama3_instruct_wrap("ping"),
+                "stop": list(self.stop),
+                "temperature": 0.0,
+                "max_new_tokens": 1,
+            }
+            r = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=timeout)
+            if r.status_code == 200:
+                _ = r.json()
+                return True
+            if r.status_code in (401, 403):
+                return False
+            # treat 503 / 5xx as "not ready"
+            return False
+        except Exception:
+            return False
+
+    async def send_warmup(self) -> bool:
+        """
+        Warm-up by forcing a short completion.
+        """
+        try:
+            headers = self.generate_header()
+            payload = {
+                "input": self._llama3_instruct_wrap("Hello!"),
+                "stop": list(self.stop),
+                "temperature": 0.1,
+                "max_new_tokens": 16,
+            }
+            r = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=60)
+            return r.status_code == 200
+        except Exception:
+            return False
+
 # -- LLM Factory builder --
 class LLMFactory:
     @staticmethod
     def create(kind) -> LLMStrategy:
+        if kind == "deepinfra":
+            model_logger.info("Creating DeepInfra model adapter")
+            return DeepInfraLlamaLLM(
+                api_token=os.environ.get("DEEPINFRA_TOKEN", ""),
+                model=os.environ.get("DEEPINFRA_MODEL", DEEPINFRA_DEFAULT_MODEL),
+            )
         if kind == "hf":
+            model_logger.info("Creating Huggingface model adapter")
             return HFEndpointLLM(
                 endpoint_url=HF_ENDPOINT_URL,
                 api_key=HF_API_KEY,

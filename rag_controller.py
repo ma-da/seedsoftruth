@@ -30,6 +30,11 @@ import utils
 
 rag_logger = logging_config.get_logger("rag")
 
+# ------------------ MODEL ADAPTERS ------------------
+
+# Allowed "hf" or "deepinfra"
+llm_model = model_adapters.LLMFactory.create("deepinfra")
+
 # ------------------ CONFIG ------------------
 
 MAX_QUESTION_WORDS = 400
@@ -569,8 +574,6 @@ def build_context_improved(
 
 # ------------------ HF ORCHESTRATION (unchanged from your version) ------------------
 
-llm_model = model_adapters.LLMFactory.create("hf")
-
 def is_model_ready(timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
     return utils.do_async_to_sync(
         lambda: llm_model.is_model_ready(timeout=timeout)
@@ -712,7 +715,9 @@ async def ask(state: RetrievalState,
               use_double_prompt = False) -> str:
     global llm_model
 
-    rag_logger.info(f"ask(): {question[:80]}...")
+    model_adaptor_name = llm_model.name()
+    rag_logger.info(f"ask() using '{model_adaptor_name}': {question[:80]}...")
+
     q, truncated = truncate_question(question)
 
     t0 = time.time()
@@ -764,7 +769,9 @@ async def ask_model_only(
     Model-only answer: NO retrieval, NO documents injected.
     Still applies truncate_question and uses the same SYSTEM_PROMPT.
     """
-    rag_logger.info(f"ask_model_only(): {question[:80]}...")
+    model_adaptor_name = llm_model.name()
+    rag_logger.info(f"ask_model_only() using '{model_adaptor_name}': {question[:80]}...")
+
     q, truncated = truncate_question(question)
 
     if use_double_prompt:
