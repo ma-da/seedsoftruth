@@ -33,13 +33,36 @@ rag_logger = logging_config.get_logger("rag")
 # ------------------ MODEL ADAPTERS ------------------
 
 # Allowed "hf" or "deepinfra"
-llm_model = model_adapters.LLMFactory.create("deepinfra")
+hf_llm_model = model_adapters.LLMFactory.create("hf")
+deep_infra_llm_model = model_adapters.LLMFactory.create("deepinfra")
+
+# the default llm model
+llm_model = hf_llm_model
+
+# list of available models
+llm_models = [hf_llm_model, deep_infra_llm_model]
+
+
+def get_model_type(type: str) -> model_adapters.LLMStrategy:
+    global llm_model, hf_llm_model, deep_infra_llm_model
+
+    if not model_adapters.is_valid_model_type(type):
+        raise ValueError(f"Invalid model type: {type}")
+
+    if type == "hf":
+        return hf_llm_model
+    elif type == "deepinfra":
+        return deep_infra_llm_model
+    elif type == "default":
+        return llm_model
+    else:
+        raise ValueError(f"Unknown model type: {type}")
+
 
 # ------------------ CONFIG ------------------
 
 MAX_QUESTION_WORDS = 400
 TOP_DOCS = 5
-
 
 # --- Data paths (override via env) ---
 TRINEDAY_DATA_DIR = Path(os.getenv("TRINEDAY_DATA_DIR", "./data/trineday_mini"))
@@ -85,6 +108,7 @@ class RetrievalState:
 class QueuedJob:
     user_id: str
     job_id: str
+    model_type: str
     prompt: str
 
 @dataclass_json
@@ -706,16 +730,15 @@ def _hf_generate_deprecated(prompt: str, *, temperature: float, max_new_tokens: 
 
     raise RuntimeError(f"HF model still loading (503). Last: {last_detail or 'n/a'}")
 
-async def ask(state: RetrievalState,
+async def ask(model_adaptor,
+              state: RetrievalState,
               question: str,
               *,
               context_k: int = 5,
               top_k: int = 10,
               verbose: bool = True,
               use_double_prompt = False) -> str:
-    global llm_model
-
-    model_adaptor_name = llm_model.name()
+    model_adaptor_name = model_adaptor.name()
     rag_logger.info(f"ask() using '{model_adaptor_name}': {question[:80]}...")
 
     q, truncated = truncate_question(question)
@@ -749,7 +772,7 @@ async def ask(state: RetrievalState,
 
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
-    answer = llm_model.generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = model_adaptor.generate(prompt, temperature=0.3, max_new_tokens=768)
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer
@@ -757,19 +780,18 @@ async def ask(state: RetrievalState,
     return answer.strip()
 
 async def ask_model_only(
+    model_adaptor,
     state: RetrievalState,
     question: str,
     *,
     verbose: bool = True,
     use_double_prompt = False,
 ) -> str:
-    global llm_model
-
     """
     Model-only answer: NO retrieval, NO documents injected.
     Still applies truncate_question and uses the same SYSTEM_PROMPT.
     """
-    model_adaptor_name = llm_model.name()
+    model_adaptor_name = model_adaptor.name()
     rag_logger.info(f"ask_model_only() using '{model_adaptor_name}': {question[:80]}...")
 
     q, truncated = truncate_question(question)
@@ -793,7 +815,7 @@ async def ask_model_only(
     if verbose:
         rag_logger.info(f"-- PROMPT (model-only) --\n{prompt}\n-- END PROMPT --")
 
-    answer = llm_model.generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = model_adaptor.generate(prompt, temperature=0.3, max_new_tokens=768)
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer

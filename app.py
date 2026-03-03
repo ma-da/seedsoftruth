@@ -38,6 +38,7 @@ import time as time_module
 
 from numpy.ma.core import true_divide
 
+import model_adapters
 import rag_controller
 
 from flask import Flask, render_template, request, jsonify, session, abort
@@ -225,8 +226,8 @@ def worker_body():
             continue
 
         try:
-            app_logger.info(f"Worker chat_with_corpus for job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
-            answer, docs = chat_with_corpus(queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
+            app_logger.info(f"Worker chat_with_corpus for model_type {queued_job.model_type} job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
+            answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
 
             resp = rag_controller.QueuedResponse(
                 ok=True,
@@ -423,7 +424,7 @@ def ask_corpus(question: str) -> str:
     return (ans or "").strip()
 
 
-def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True, use_double_prompt = False) -> Dict[str, Any]:
+def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True, use_double_prompt = False) -> Dict[str, Any]:
     """
     Returns (answer: str, docs: list[dict])
 
@@ -441,12 +442,16 @@ def chat_with_corpus(query: str, top_k: int = 10, shard_k: int = 20, use_rag: bo
     if not q:
         return ("", [])
 
+    model_adaptor = rag_controller.get_model_type(model_type)
+    if model_adaptor is None:
+        raise RuntimeError(f"Could not get valid model adapter for type: {model_type}")
+
     async def _run():
         # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
         if use_rag:
-            answer = await rag_controller.ask(retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
         else:
-            answer = await rag_controller.ask_model_only(retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+            answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
 
         answer = str(answer or "").strip()
 
@@ -697,6 +702,21 @@ def api_chat():
             "error": "Field 'user_id' cannot be none or empty"
         }), 400
 
+    model_type = payload.get("model_type", None)
+    if model_type is None:
+        app_logger.warning("Chat request model_type was missing")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'model_type' was missing"
+        }), 400
+
+    if not model_adapters.is_valid_model_type(model_type):
+        app_logger.warning(f"Chat request model_type was invalid: {model_type}")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'model_type' was invalid"
+        }), 400
+
     # rate limit check. blocks if user sending too frequently.
     if not rate_limiter.check(user_id):
         app_logger.warning("Chat request user_id was rate limited")
@@ -748,7 +768,7 @@ def api_chat():
         inflight_chat_reqs.inc()
 
         # LLM model call goes here
-        answer, docs = chat_with_corpus(msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         app_logger.info(f"Marking job {job_id} as done in db...")
         db.mark_done(job_id, answer)
@@ -890,13 +910,17 @@ def api_ab():
     except Exception:
         shard_k, top_k = 20, 10
 
+    # TODO: FIX ME LATER
+    model_type_a = "hf"
+    model_type_b = "hf"
+
     try:
         # A
-        a_answer, a_refs = chat_with_corpus(msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        a_answer, a_refs = chat_with_corpus(model_type_a, msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         # B (alternate phrasing prompt)
         b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
-        b_answer, b_refs = chat_with_corpus(b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        b_answer, b_refs = chat_with_corpus(model_type_b, b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
 
         app_logger.info(f"Marking job {job_id_a} as done in db...")
         db.mark_done(job_id_a, a_answer)

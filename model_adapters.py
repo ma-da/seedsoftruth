@@ -25,6 +25,9 @@ Stop after the answer.
 
 model_logger = logging_config.get_logger("rag")
 
+MODEL_ADAPTOR_NAMES = ["hf", "deepinfra"]
+
+
 # --- Huggingface params ---
 
 # endpoint wtk-trineday-mini-llama3-70b-muu
@@ -45,6 +48,7 @@ HF_REQ_HEADERS = {
 
 HF_HEALTH_PAYLOAD = {"inputs": "health_check"}
 
+
 # -- Deep Infra params --
 
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/inference"      # should end with slash
@@ -52,7 +56,9 @@ DEEPINFRA_DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct"
 
 LLAMA3_STOP: List[str] = ["<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"]
 
+
 # -- Base LLM strategy --
+
 # This class is the base class which contains common methods for all strategies.
 # It contains hooks which should be overridden by implementations.
 class LLMStrategy(ABC):
@@ -460,3 +466,11 @@ class LLMFactory:
             )
 
         raise ValueError(f"Unknown LLM type: {kind}")
+
+
+# -- Helpers --
+
+def is_valid_model_type(type: str) -> bool:
+    return isinstance(type, str) and type in MODEL_ADAPTOR_NAMES
+
+

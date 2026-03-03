@@ -1701,6 +1701,9 @@ async function handleChatSubmit(e) {
 
   const contextTurns = getContextTurns(toolState.historyTurns);
 
+  // TODO: Fill me in. Either "hf" or "deepinfra"
+  const model_type = "hf";
+
   // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
     user_id: userId,
@@ -1708,7 +1711,8 @@ async function handleChatSubmit(e) {
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
     context: contextTurns,
-	use_rag: !!toolState.useRag
+	use_rag: !!toolState.useRag,
+	model_type
   };
 
   // Start “busy” immediately so the user gets feedback right away
@@ -1813,6 +1817,7 @@ async function handleChatSubmit(e) {
     const data = await apiChat(payload);
     const reply = data.reply || data.message || data.status || '';
     const job_id = data.job_id || CFG.JOB_ID_NONE;
+
     setNoteMessage('Rendering response…', { busy: true });
 
 	const finalReply = reply || '(no reply)';
