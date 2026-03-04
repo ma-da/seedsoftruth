@@ -63,7 +63,8 @@ const els = {}; // populated in initDom()
    ========================================================= */
 const toolState = {
   historyTurns: CFG.DEFAULT_HISTORY_TURNS,
-  mode: CFG.DEFAULT_MODE
+  mode: CFG.DEFAULT_MODE,
+  modelType: "hf"
 };
 
 // client-side turns: { user: string, assistant: string }
@@ -601,6 +602,20 @@ function initToolsPopup() {
       }
     });
   }
+  // Model selection change
+  if (modelSelect && toolState.modelType) {
+    modelSelect.value = toolState.modelType;
+  }
+}
+
+// Model selection
+const modelSelect = document.getElementById("model-type");
+
+if (modelSelect) {
+  modelSelect.addEventListener("change", () => {
+    toolState.modelType = modelSelect.value;
+    saveToolState();
+  });
 }
 
 /* =========================================================
@@ -1701,8 +1716,8 @@ async function handleChatSubmit(e) {
 
   const contextTurns = getContextTurns(toolState.historyTurns);
 
-  // TODO: Fill me in. Either "hf" or "deepinfra"
-  const model_type = "hf";
+  // Define model type
+  const model_type = toolState.modelType || "hf";
 
   // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
@@ -2210,6 +2225,8 @@ function startPolling() {
 /* =========================================================
    21) INIT / WIRING (bottom)
    ========================================================= */
+   
+   
 function initDom() {
   els.body = document.body;
 
