@@ -191,6 +191,29 @@
 
 				<!-- Tools popup -->
 				<div class="tools-popup" id="tools-popup" aria-label="Tools panel" role="dialog" aria-modal="false">
+				<!-- MODEL -->
+				<div class="tools-section">
+				  <div class="tools-section-title">Model</div>
+
+				  <div class="tools-row">
+					<div class="tools-row-text">
+					  <!-- <div class="tools-help" id="model-type-help">
+						Select base model
+					  </div>-->
+					</div>
+
+					<select
+					  id="model-type"
+					  class="tools-select"
+					  aria-describedby="model-type-help"
+					>
+					  <option value="hf" selected>Seeds of Truth LoRA</option>
+					  <option value="deepinfra">Vanilla Llama</option>
+					</select>
+				  </div>
+				</div>
+
+				<div class="tools-divider" aria-hidden="true"></div>				
 				  <!-- MODE -->
 				  <div class="tools-section">
 					<div class="tools-section-title">Mode</div>
