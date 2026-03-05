@@ -1316,6 +1316,12 @@ body.light .input-note{ color: var(--muted-light); }
   word-break: break-word;
 }
 
+.msg-actions,
+.ab-actions {
+  display: flex;
+  align-items: center;
+  gap: 0px;  
+}
 
 /* ==========================================================================
    9) TOOLS POPUP
@@ -1999,7 +2005,7 @@ body.light .comment-btn:hover{
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 0px;
   flex-shrink: 0;
 }
 
@@ -2414,4 +2420,5 @@ body.sidebar-collapsed .sidebar-open-btn{
 
   .overlay.visible{ display: block; }
 }
+
 
