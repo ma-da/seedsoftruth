@@ -821,6 +821,40 @@ function initFeedbackModal() {
   }
 }
 
+/*--------- Copy to clipboard helper  --------------*/
+
+async function copyTextToClipboard(text) {
+  const s = String(text ?? '');
+  if (!s) return false;
+
+  // Preferred (secure context: https / localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(s);
+    return true;
+  }
+
+  // Fallback
+  const ta = document.createElement('textarea');
+  ta.value = s;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '0';
+  document.body.appendChild(ta);
+  ta.select();
+
+  const ok = document.execCommand('copy');
+  ta.remove();
+  return ok;
+}
+
+function bumpTooltip(btn, msg = 'Copied!', ms = 900) {
+  if (!btn?.dataset) return;
+  const prev = btn.dataset.tooltip;
+  btn.dataset.tooltip = msg;
+  setTimeout(() => (btn.dataset.tooltip = prev), ms);
+}
+
 /* =========================================================
    10) CHAT UI RENDERING
    ========================================================= */
@@ -904,7 +938,7 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
   scrollChatToBottom();
 }
 
-// A/B mode: side-by-side answers with selectable choice + feedback + typing
+// A/B mode: side-by-side answers with selectable choice + feedback + typing + copy
 async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   const row = document.createElement('div');
   row.className = 'message-row bot';
@@ -936,7 +970,6 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     const panel = document.createElement('div');
     panel.className = 'ab-panel';
 
-    // header
     const head = document.createElement('div');
     head.className = 'ab-head';
 
@@ -949,13 +982,43 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
 
     const id = `ab_${variant}_${nowId('msg')}`;
 
-    // IMPORTANT: snippet must track final text, not the initial placeholder
+    // Track final text
     let snippetForFeedback = `[A/B ${variant}]`;
+    let latestTextForCopy = '';
 
+    /* COPY BUTTON */
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'copy-btn comment-btn has-tooltip';
+    copyBtn.dataset.tooltip = 'Copy to clipboard';
+    copyBtn.setAttribute('aria-label', 'Copy response to clipboard');
+
+    copyBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+        stroke="currentColor" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+    `;
+
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const textToCopy = latestTextForCopy || body.textContent || '';
+        const ok = await copyTextToClipboard(textToCopy);
+        bumpTooltip(copyBtn, ok ? 'Copied!' : 'Copy failed');
+      } catch {
+        bumpTooltip(copyBtn, 'Copy failed');
+      }
+    });
+
+    /* FEEDBACK BUTTON */
     const commentBtn = document.createElement('button');
     commentBtn.type = 'button';
     commentBtn.className = 'comment-btn';
     commentBtn.setAttribute('aria-label', 'Add feedback');
+
     commentBtn.innerHTML = `
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
         stroke="currentColor" stroke-width="2.2"
@@ -963,21 +1026,24 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
         <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
       </svg>
     `;
+
     commentBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       openFeedbackModal({ type: 'response', id, snippet: snippetForFeedback, job_id });
     });
 
+    actions.appendChild(copyBtn);
     actions.appendChild(commentBtn);
+
     head.appendChild(lbl);
     head.appendChild(actions);
 
-    // body (start empty — we will type into this)
+    /* BODY */
     const body = document.createElement('div');
     body.className = 'message-text';
-    body.textContent = ''; // or '…' if you want an initial placeholder
+    body.textContent = '';
 
-    // footer
+    /* FOOTER */
     const footer = document.createElement('div');
     footer.className = 'ab-footer';
 
@@ -985,6 +1051,7 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     selectBtn.type = 'button';
     selectBtn.className = 'ab-select-btn';
     selectBtn.textContent = 'Select this response';
+
     selectBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       selectPanel(panel, variant);
@@ -1002,7 +1069,9 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
       panel,
       body,
       setSnippet: (finalText) => {
-        snippetForFeedback = `[A/B ${variant}] ${String(finalText ?? '')}`;
+        const s = String(finalText ?? '');
+        snippetForFeedback = `[A/B ${variant}] ${s}`;
+        latestTextForCopy = s;
       }
     };
   }
@@ -1016,27 +1085,19 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
   inner.appendChild(avatar);
   inner.appendChild(wrap);
   row.appendChild(inner);
+
   els.messagesEl.appendChild(row);
   scrollChatToBottom();
 
-  // --- Typing animation ---
+  /* Typing animation */
   const aFinal = String(aText ?? '');
   const bFinal = String(bText ?? '');
 
-  // Option 1 (recommended): type A then type B (less chaotic)
   await typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
   panelA.setSnippet(aFinal);
 
   await typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
   panelB.setSnippet(bFinal);
-
-  // Option 2: type both at once (comment out option 1, uncomment below)
-  // await Promise.all([
-  //   typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 })
-  //     .then(() => panelA.setSnippet(aFinal)),
-  //   typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650 })
-  //     .then(() => panelB.setSnippet(bFinal)),
-  // ]);
 }
 
 
@@ -1073,6 +1134,37 @@ function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
   // IMPORTANT: snippet should reflect FINAL text (not whatever it was initially)
   let snippetForFeedback = initialText;
 
+  // Also keep the latest full text for copying
+  let latestTextForCopy = initialText;
+
+  // --- COPY button (new) ---
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  // reuse your existing button styling + tooltip behavior
+  copyBtn.className = 'copy-btn comment-btn has-tooltip';
+  copyBtn.dataset.tooltip = 'Copy to clipboard';
+  copyBtn.setAttribute('aria-label', 'Copy response to clipboard');
+  copyBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+      stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>
+  `;
+
+  copyBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      const ok = await copyTextToClipboard(latestTextForCopy || textEl.textContent || '');
+      if (ok) bumpTooltip(copyBtn, 'Copied!');
+      else bumpTooltip(copyBtn, 'Copy failed');
+    } catch {
+      bumpTooltip(copyBtn, 'Copy failed');
+    }
+  });
+
+  // --- FEEDBACK button (existing) ---
   const commentBtn = document.createElement('button');
   commentBtn.type = 'button';
   commentBtn.className = 'comment-btn has-tooltip';
@@ -1090,6 +1182,8 @@ function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
     openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback, job_id });
   });
 
+  // Put copy immediately LEFT of feedback
+  actions.appendChild(copyBtn);
   actions.appendChild(commentBtn);
   contentWrap.appendChild(textEl);
   contentWrap.appendChild(actions);
@@ -1103,7 +1197,11 @@ function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
 
   return {
     textEl,
-    setSnippet: (finalText) => { snippetForFeedback = String(finalText ?? ''); },
+    setSnippet: (finalText) => {
+      const s = String(finalText ?? '');
+      snippetForFeedback = s;
+      latestTextForCopy = s;
+    },
     msgId
   };
 }
