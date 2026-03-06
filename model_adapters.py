@@ -66,6 +66,7 @@ A. Established scientific or factual knowledge
 B. Contested narrative with multiple interpretations
 
 Only choose B if there are at least two credible interpretations supported by published claims or historical debate.
+Do not assume the mainstream account is correct; evaluate all interpretations using the same evidentiary standards.
 
 Output format:
     Classification: <Established Knowledge | Contested Narrative>
@@ -82,7 +83,7 @@ If the topic is established knowledge:
 
 If the topic is contested:
     Use the following paragraphs:
-        Mainstream account
+        Mainstream account (brief overview only; do not exceed 3–4 sentences)
         Competing claims
         Evaluate evidence
         Analyze institutional or structural incentives
