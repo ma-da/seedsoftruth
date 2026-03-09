@@ -891,6 +891,9 @@ body.light .ref-badge[href]:hover{
 .comment-btn{
   flex-shrink: 0;
 }
+.copy-clipboard-btn{
+  flex-shrink: 0;
+}
 
 /* Snippet text (inside card) */
 .ref-snippet{
@@ -1994,6 +1997,28 @@ body.light .comment-btn:hover{
 }
 .comment-btn svg{ display: block; }
 
+/* Comment icon button (per message / reference) */
+.copy-clipboard-btn{
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+}
+.copy-clipboard-btn:hover{
+  background: rgba(148,163,184,0.18);
+  color: #111827;
+}
+body.light .copy-clipboard-btn:hover{
+  background: rgba(148,163,184,0.28);
+  color: #020617;
+}
+.copy-clipboard-btn svg{ display: block; }
+
 /* Place comment icon in bot message rows */
 .msg-actions{
   margin-left: auto;
@@ -2167,6 +2192,7 @@ body.light .fb-btn{ background: rgba(148,163,184,0.18); }
 #chat-container{ min-height: 80vh; }
 
 .comment-btn{ flex-shrink: 0; }
+.copy-clipboard-btn{ flex-shrink: 0; }
 
 #references-container{
   display: grid;
