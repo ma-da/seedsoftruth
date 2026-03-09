@@ -84,7 +84,7 @@ If the topic is established knowledge:
 If the topic is contested:
     Use the following paragraphs:
         Mainstream account (brief overview only; do not exceed 3–4 sentences)
-        Competing claims (use detailed description and list the evidence for each competing claim)
+        Competing claims
         Evaluate evidence
         Analyze institutional or structural incentives
         End with a Plausibility Spectrum

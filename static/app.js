@@ -873,56 +873,6 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
 
-    const copyClipboardBtn = document.createElement('button');
-    copyClipboardBtn.type = 'button';
-    copyClipboardBtn.className = 'copy-clipboard-btn has-tooltip';
-    copyClipboardBtn.dataset.tooltip = 'Copy to Clipboard';
-    copyClipboardBtn.setAttribute('aria-label', 'Copy to Clipboard');
-
-    const clipboardIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2"/>
-      <path d="M5 15V5a2 2 0 0 1 2-2h10"/>
-    </svg>
-    `;
-
-    const checkIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="20 6 9 17 4 12"/>
-    </svg>
-    `;
-
-    copyClipboardBtn.innerHTML = clipboardIcon;
-
-    copyClipboardBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-
-      try {
-        // Find the nearest message container
-        const container = copyClipboardBtn.closest('.ai-message');
-
-        // Adjust selector depending on your DOM structure
-        const text = container.querySelector('.ai-content').innerText;
-
-        await navigator.clipboard.writeText(text);
-
-        // Change icon to checkmark
-        copyClipboardBtn.innerHTML = checkIcon;
-
-        // revert after 1.5 seconds
-        setTimeout(() => {
-          copyClipboardBtn.innerHTML = clipboardIcon;
-        }, 1500);
-
-      } catch (err) {
-        console.error("Clipboard copy failed:", err);
-      }
-    });
-
     const commentBtn = document.createElement('button');
     commentBtn.type = 'button';
     commentBtn.className = 'comment-btn has-tooltip';
@@ -941,9 +891,7 @@ function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
       openFeedbackModal({ type: 'response', id: msgId, snippet: text, job_id });
     });
 
-    actions.appendChild(copyClipboardBtn);
     actions.appendChild(commentBtn);
-
     contentWrap.appendChild(textEl);
     contentWrap.appendChild(actions);
     inner.appendChild(contentWrap);
@@ -1004,56 +952,6 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
     // IMPORTANT: snippet must track final text, not the initial placeholder
     let snippetForFeedback = `[A/B ${variant}]`;
 
-    const copyClipboardBtn = document.createElement('button');
-    copyClipboardBtn.type = 'button';
-    copyClipboardBtn.className = 'copy-clipboard-btn has-tooltip';
-    copyClipboardBtn.dataset.tooltip = 'Copy to Clipboard';
-    copyClipboardBtn.setAttribute('aria-label', 'Copy to Clipboard');
-
-    const clipboardIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2"/>
-      <path d="M5 15V5a2 2 0 0 1 2-2h10"/>
-    </svg>
-    `;
-
-    const checkIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="20 6 9 17 4 12"/>
-    </svg>
-    `;
-
-    copyClipboardBtn.innerHTML = clipboardIcon;
-
-    copyClipboardBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-
-      try {
-        // Find the nearest message container
-        const container = copyClipboardBtn.closest('.ai-message');
-
-        // Adjust selector depending on your DOM structure
-        const text = container.querySelector('.ai-content').innerText;
-
-        await navigator.clipboard.writeText(text);
-
-        // Change icon to checkmark
-        copyClipboardBtn.innerHTML = checkIcon;
-
-        // revert after 1.5 seconds
-        setTimeout(() => {
-          copyClipboardBtn.innerHTML = clipboardIcon;
-        }, 1500);
-
-      } catch (err) {
-        console.error("Clipboard copy failed:", err);
-      }
-    });
-
     const commentBtn = document.createElement('button');
     commentBtn.type = 'button';
     commentBtn.className = 'comment-btn';
@@ -1070,9 +968,7 @@ async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
       openFeedbackModal({ type: 'response', id, snippet: snippetForFeedback, job_id });
     });
 
-    actions.appendChild(copyClipboardBtn);
     actions.appendChild(commentBtn);
-
     head.appendChild(lbl);
     head.appendChild(actions);
 
@@ -1177,54 +1073,6 @@ function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
   // IMPORTANT: snippet should reflect FINAL text (not whatever it was initially)
   let snippetForFeedback = initialText;
 
-
-  const copyClipboardBtn = document.createElement('button');
-  copyClipboardBtn.type = 'button';
-  copyClipboardBtn.className = 'copy-clipboard-btn has-tooltip';
-  copyClipboardBtn.dataset.tooltip = 'Copy to Clipboard';
-  copyClipboardBtn.setAttribute('aria-label', 'Copy to Clipboard');
-
-  const clipboardIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2"/>
-      <path d="M5 15V5a2 2 0 0 1 2-2h10"/>
-    </svg>
-  `;
-
-  const checkIcon = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="20 6 9 17 4 12"/>
-    </svg>
-  `;
-
-  copyClipboardBtn.innerHTML = clipboardIcon;
-
-  copyClipboardBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-
-      try {
-        const container = copyClipboardBtn.closest('.message-row');
-        const text = container.querySelector('.message-text').innerText;
-
-        await navigator.clipboard.writeText(text);
-
-        // Change icon to checkmark
-        copyClipboardBtn.innerHTML = checkIcon;
-
-        // revert after 1.5 seconds
-        setTimeout(() => {
-          copyClipboardBtn.innerHTML = clipboardIcon;
-        }, 1500);
-
-      } catch (err) {
-        console.error("Clipboard copy failed:", err);
-      }
-  });
-
   const commentBtn = document.createElement('button');
   commentBtn.type = 'button';
   commentBtn.className = 'comment-btn has-tooltip';
@@ -1242,9 +1090,7 @@ function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
     openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback, job_id });
   });
 
-  actions.appendChild(copyClipboardBtn);
   actions.appendChild(commentBtn);
-
   contentWrap.appendChild(textEl);
   contentWrap.appendChild(actions);
 
