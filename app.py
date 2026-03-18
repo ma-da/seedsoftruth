@@ -749,7 +749,7 @@ def api_chat():
 
         # send wake-up request to model
         rag_controller.send_warmup()
-        rag_controller.queue_job(user_id, job_id, msg)
+        rag_controller.queue_job(user_id, job_id, model_type, msg)
 
         return jsonify({
             "ok": False,

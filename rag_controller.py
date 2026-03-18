@@ -833,8 +833,8 @@ outgoing_lock = threading.Lock()
 inflight_users = {}
 inflight_lock = threading.Lock()
 
-def queue_job(user_id, job_id, msg) -> bool:
-    queued_job = QueuedJob(user_id, job_id, msg)
+def queue_job(user_id, job_id, msg, prompt) -> bool:
+    queued_job = QueuedJob(user_id, job_id, msg, prompt)
     with job_lock:
         job_queue.append(queued_job)
         return len(job_queue)
