@@ -229,6 +229,9 @@ def worker_body():
             app_logger.info(f"Worker chat_with_corpus for model_type {queued_job.model_type} job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
             answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
 
+            # clean up docs of copyrighted material
+            cleaned_docs = rag_controller.clean_rag_references(docs)
+
             resp = rag_controller.QueuedResponse(
                 ok=True,
                 error="none",
@@ -237,7 +240,7 @@ def worker_body():
                 user_id=queued_job.user_id,
                 prompt=queued_job.prompt,
                 reply=answer,
-                references=docs
+                references=cleaned_docs
             )
             rag_controller.queue_outgoing(resp)
 
@@ -626,9 +629,14 @@ def api_search():
         if not isinstance(out_list, list):
             out_list = []
 
+        cleaned_list = rag_controller.clean_rag_references(out_list)
+        app_logger.info(f"Original search_references api_search: {out_list}")
+
         num_results = results.get("num_results")
         if not isinstance(num_results, int):
-            num_results = len(out_list)
+            num_results = len(cleaned_list)
+
+        app_logger.info(f"\n\n*****\n Cleaned search_references api_search: {cleaned_list} \n\n*****")
 
         message = results.get("message")
         if not isinstance(message, str) or not message.strip():
@@ -639,8 +647,8 @@ def api_search():
             "query": query,
             "num_results": num_results,
             "message": message,
-            "references": out_list,
-            "results": out_list,
+            "references": cleaned_list,
+            "results": cleaned_list,
             "top_k": top_k,
             "shard_k": shard_k,
         }), 200
@@ -769,6 +777,10 @@ def api_chat():
 
         # LLM model call goes here
         answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        app_logger.info(f"Original search references in api_chat: {docs}")
+
+        # clean up docs of copyrighted material
+        cleaned_docs = rag_controller.clean_rag_references(docs)
 
         app_logger.info(f"Marking job {job_id} as done in db...")
         db.mark_done(job_id, answer)
@@ -805,7 +817,7 @@ def api_chat():
         "job_id": job_id,
         "user_id": user_id,
         "detail": "success",
-        "references": docs
+        "references": cleaned_docs
     }), 200
 
 

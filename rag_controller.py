@@ -30,6 +30,9 @@ import utils
 
 rag_logger = logging_config.get_logger("rag")
 
+TRINEDAY_TOKEN = 'Trine Day Publishing'
+COPYRIGHT_BLOCK_MSG = 'This text protected by copyright.'
+
 # ------------------ MODEL ADAPTERS ------------------
 
 # Allowed "hf" or "deepinfra"
@@ -920,6 +923,24 @@ def outgoing_queue_len():
 
     with outgoing_lock:
         return len(outgoing_queue)
+
+
+# Cleans up rag references before we return them to the client. Uses transformation and does not modify original.
+def clean_rag_references(docs):
+    cleaned = []
+    for doc in docs:
+        print(f"publisher: {doc['publisher']}")
+        print(f"found_on: {doc['found_on']}")
+        if doc.get('publisher') == TRINEDAY_TOKEN or doc.get('found_on') == TRINEDAY_TOKEN:
+            print("REPLACED")
+            new_doc = dict(doc)  # shallow copy
+            new_doc['text'] = COPYRIGHT_BLOCK_MSG
+            new_doc['snippet'] = COPYRIGHT_BLOCK_MSG
+            cleaned.append(new_doc)
+        else:
+            print("ORIG")
+            cleaned.append(doc)
+    return cleaned
 
 
 # ------------------ MAIN (for local CLI test) ------------------
