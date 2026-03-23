@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Optional, List
+import spacy
 
 # ----------------------------
 # Regex patterns
@@ -160,3 +161,228 @@ def clean_text_for_rag(
     #}
 
     return main_text
+
+# ----------------------------
+# Rag entity extraction functions
+# ----------------------------
+
+# spaCy entity → simplified category mapping
+LABEL_MAP = {
+    "PERSON": "persons",
+    "ORG": "organizations",
+    "GPE": "locations",
+    "LOC": "locations",
+    "WORK_OF_ART": "works",
+    "EVENT": "events",
+    "DATE": "dates"
+}
+
+# labels we usually ignore
+IGNORE_LABELS = {
+    "CARDINAL",
+    "ORDINAL",
+    "QUANTITY",
+    "PERCENT",
+    "TIME",
+    "MONEY"
+}
+
+# allow some single token historical figures
+PERSON_WHITELIST = {
+    "Hitler",
+    "Nixon",
+    "Stalin",
+    "Lenin",
+    "JFK",
+    "MLK"
+}
+
+BLACKLIST = {"Darth Vader"}
+
+nlp = spacy.load("en_core_web_trf")
+
+def clean_entity(text):
+    text = text.strip()
+
+    # remove possessives
+    text = re.sub(r"[’']s$", "", text)
+
+    # collapse whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text
+
+def is_strong_person(name):
+
+    if name in PERSON_WHITELIST:
+        return True
+
+    # require at least 2 tokens
+    return len(name.split()) >= 2
+
+
+def canonicalize_persons(persons):
+
+    canonical = {}
+
+    for p in persons:
+        parts = p.split()
+
+        last = parts[-1]
+
+        # prefer longest name
+        if last not in canonical or len(p) > len(canonical[last]):
+            canonical[last] = p
+
+    return sorted(canonical.values())
+
+
+def canonicalize_orgs(orgs):
+
+    canonical = {}
+
+    for o in orgs:
+        o = re.sub(r"^the\s+", "", o, flags=re.I)
+
+        key = o.lower()
+
+        if key not in canonical or len(o) > len(canonical[key]):
+            canonical[key] = o
+
+    return sorted(set(canonical.values()))
+
+
+def filter_dates(dates):
+
+    keep = []
+
+    for d in dates:
+
+        # keep real years
+        if re.match(r"\b\d{4}\b", d):
+            keep.append(d)
+
+    return sorted(set(keep))
+
+
+def limit_entities(items, limit):
+
+    return items[:limit]
+
+
+def extract_entities(text):
+    doc = nlp(text)
+
+    entities = []
+    for ent in doc.ents:
+        entities.append({
+            "text": ent.text,
+            "label": ent.label_
+        })
+
+    return entities
+
+def group_entities(entities):
+
+    buckets = {
+        "persons": [],
+        "organizations": [],
+        "locations": [],
+        "works": [],
+        "events": [],
+        "dates": []
+    }
+
+    for ent in entities:
+
+        label = ent["label"]
+
+        if label in IGNORE_LABELS:
+            continue
+
+        category = LABEL_MAP.get(label)
+
+        if not category:
+            continue
+
+        text = clean_entity(ent["text"])
+
+        if text in BLACKLIST:
+            continue
+
+        buckets[category].append(text)
+
+    # --- persons ---
+    persons = [p for p in buckets["persons"] if is_strong_person(p)]
+    persons = canonicalize_persons(persons)
+
+    # --- organizations ---
+    orgs = canonicalize_orgs(buckets["organizations"])
+
+    # --- locations ---
+    locations = sorted(set(buckets["locations"]))
+
+    # --- works ---
+    works = sorted(set(buckets["works"]))
+
+    # --- events ---
+    events = sorted(set(buckets["events"]))
+
+    # --- dates ---
+    dates = filter_dates(buckets["dates"])
+
+    result = {
+        "persons": limit_entities(persons, 5),
+        "organizations": limit_entities(orgs, 4),
+        "locations": limit_entities(locations, 3),
+        "works": works,
+        "events": events,
+        "dates": dates
+    }
+
+    # remove empty categories
+    return {k: v for k, v in result.items() if v}
+
+
+def extract_and_group_entities(text):
+    return group_entities(extract_entities(text))
+
+def extract_query_entities(text):
+
+    raw_entities = extract_entities(text)
+    grouped = group_entities(raw_entities)
+
+    salient = {}
+
+    for category, items in grouped.items():
+
+        scored = []
+
+        for ent in items:
+
+            # --- position score (earlier = more important) ---
+            pos = text.find(ent)
+            position_score = 1.0 - (pos / max(len(text), 1))
+
+            # --- length / specificity ---
+            length_score = len(ent.split()) * 0.2
+
+            # --- type weight ---
+            type_weight = ENTITY_TYPE_WEIGHTS.get(category, 0.5)
+
+            score = position_score + length_score + type_weight
+
+            scored.append((score, ent))
+
+        scored.sort(reverse=True)
+
+        # much smaller caps for queries
+        top_n = {
+            "persons": 3,
+            "organizations": 2,
+            "locations": 2
+        }.get(category, 1)
+
+        salient[category] = [ent for _, ent in scored[:top_n]]
+
+    return {k: v for k, v in salient.items() if v}

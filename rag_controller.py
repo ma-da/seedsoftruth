@@ -381,6 +381,11 @@ async def search_references(
     if not q:
         return {"query": query, "num_results": 0, "results": [], "message": "Empty query."}
 
+    # get entities associated with query
+    # TODO: Incorporate RAG entity boosting here later
+    entities = rag_cleaner.extract_and_group_entities(query)
+    rag_logger.info(f"search_references entities: {entities}")
+
     if state.shards is not None:
         results = _search_shards(state, q, top_k=int(top_k))
     else:
@@ -835,6 +840,7 @@ outgoing_lock = threading.Lock()
 
 inflight_users = {}
 inflight_lock = threading.Lock()
+
 
 def queue_job(user_id, job_id, msg, prompt) -> bool:
     queued_job = QueuedJob(user_id, job_id, msg, prompt)
