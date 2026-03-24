@@ -935,16 +935,12 @@ def outgoing_queue_len():
 def clean_rag_references(docs):
     cleaned = []
     for doc in docs:
-        print(f"publisher: {doc['publisher']}")
-        print(f"found_on: {doc['found_on']}")
         if doc.get('publisher') == TRINEDAY_TOKEN or doc.get('found_on') == TRINEDAY_TOKEN:
-            print("REPLACED")
             new_doc = dict(doc)  # shallow copy
             new_doc['text'] = COPYRIGHT_BLOCK_MSG
             new_doc['snippet'] = COPYRIGHT_BLOCK_MSG
             cleaned.append(new_doc)
         else:
-            print("ORIG")
             cleaned.append(doc)
     return cleaned
 

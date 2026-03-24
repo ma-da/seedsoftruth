@@ -199,7 +199,9 @@ PERSON_WHITELIST = {
 
 BLACKLIST = {"Darth Vader"}
 
-nlp = spacy.load("en_core_web_trf")
+# this spacy object used for entity classification for prompts
+# "en_core_web_trf" has more accuracy but "en_core_web_sm" should be sufficient
+nlp = spacy.load("en_core_web_sm")
 
 def clean_entity(text):
     text = text.strip()
