@@ -143,6 +143,12 @@ body.light .main { background: var(--bg-light); }
    4) SIDEBAR
    ========================================================================== */
 
+/* Default sidebar surface = dark mode */
+.sidebar{
+  background: #000;
+  border-right: 1px solid rgba(148,163,184,0.35);
+}
+
 /* Light-mode sidebar surface */
 body.light .sidebar {
   background: rgba(255,255,255,0.95);
@@ -210,9 +216,19 @@ body.light .brand-subtitle{ color: var(--muted-light); }
   justify-content: center;
   padding: 10px;
 }
-.lock-btn svg {
-  width: 64px;   /* 18px × 3 */
+.lock-icon{
+  width: 64px;
   height: 64px;
+  display: block;
+}
+.lock-icon-unlocked{
+  display: none;
+}
+#lock-btn.unlocked .lock-icon-locked{
+  display: none;
+}
+#lock-btn.unlocked .lock-icon-unlocked{
+  display: block;
 }
 
 body.light .lock-btn{
@@ -298,10 +314,27 @@ body.light .theme-icon.moon{ display: block; }
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--muted-dark);
   margin: 6px 10px;
+  color: var(--muted-dark);
 }
-body.light .sidebar-section-title{ color: var(--muted-light); }
+
+body.light .sidebar-section-title{
+  color: var(--muted-light);
+}
+
+/* Force dark-mode title links to accent */
+body.dark .sidebar-section-title,
+body.dark .sidebar-section-title a,
+body.dark .sidebar-section-title a:link,
+body.dark .sidebar-section-title a:visited{
+  color: var(--accent) !important;
+}
+
+body.dark .sidebar-section-title a:hover,
+body.dark .sidebar-section-title a:focus{
+  color: var(--accent) !important;
+}
+
 
 /* Optional pill button style */
 .pill-button{
@@ -335,10 +368,6 @@ body.light .pill-button{
 body.light .recent-item{ color: var(--muted-light); }
 body.light .recent-item:hover{ background: rgba(148,163,184,0.18); }
 
-.sidebar a {
-  color: black;
-}
-
 .sidebar a:hover {
   color: var(--viola);
 }
@@ -354,7 +383,7 @@ body.light .recent-item:hover{ background: rgba(148,163,184,0.18); }
   padding-top: 12px;
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* keep scrolling inside sidebar-scroll */
+  overflow: hidden;
   z-index: 4000;
 }
 
@@ -399,7 +428,7 @@ body.light .sidebar-footer{ border-top-color: rgba(148,163,184,0.5); }
 #sidebar .sidebar-collapse-btn{
   position: absolute;
   right: 12px;
-  bottom: 86px; /* adjust: footer height + spacing */
+  bottom: 16px; /* adjust: footer height + spacing */
   z-index: 10;
 }
 
@@ -2420,5 +2449,6 @@ body.sidebar-collapsed .sidebar-open-btn{
 
   .overlay.visible{ display: block; }
 }
+
 
 
