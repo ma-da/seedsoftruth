@@ -2578,4 +2578,3 @@ document.addEventListener('DOMContentLoaded', init);
     spawn(e.clientX, e.clientY);
   }, { passive: true });
 })();
-
