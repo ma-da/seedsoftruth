@@ -35,6 +35,7 @@ from datetime import datetime, time
 from typing import List, Optional, Dict, Any
 from zoneinfo import ZoneInfo
 import time as time_module
+import platform
 
 from numpy.ma.core import true_divide
 
@@ -349,6 +350,8 @@ if ENABLE_MIN_GATING:
 else:
     app_logger.info("Min gating feature is disabled")
 
+app_logger.info(f"Python version: {platform.python_version()}")
+
 
 # ------------------ Shared search/chat functions ------------------
 
@@ -473,9 +476,9 @@ def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int 
         words = retrieval_text.split()
         if len(words) > 900:
             retrieval_text = " ".join(words[:900])
-            
+
         # extra logging
-        app_logger.info("chat refs retrieval_text words=%d", len(retrieval_text.split()))        
+        app_logger.info("chat refs retrieval_text words=%d", len(retrieval_text.split()))
 
         # 3) Fetch reference docs using retrieval_text
         pack = await rag_controller.search_references(
@@ -684,7 +687,7 @@ def api_chat():
 
     payload = request.get_json(silent=True) or {}
     use_rag = payload.get("use_rag", True)
-    use_rag = bool(use_rag)    
+    use_rag = bool(use_rag)
     msg = (payload.get("message") or payload.get("query") or "").strip()
     if not msg:
         return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
