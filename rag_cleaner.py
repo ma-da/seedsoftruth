@@ -388,3 +388,172 @@ def extract_query_entities(text):
         salient[category] = [ent for _, ent in scored[:top_n]]
 
     return {k: v for k, v in salient.items() if v}
+
+# ------------------ RERANKING ------------------
+
+ENTITY_WEIGHTS = {
+    "persons": 1.0,
+    "organizations": 0.8,
+    "events": 1.0,
+    "locations": 0.5
+}
+
+def entity_overlap_score(query_set, chunk_entities):
+
+    chunk_set = set(
+        e for v in chunk_entities.values() for e in v
+    )
+
+    overlap = query_set & chunk_set
+
+    if not overlap:
+        return 0.0
+
+    # normalized overlap (prevents long chunks dominating)
+    return len(overlap) / len(query_set)
+
+
+def boost_score(bm25_score, entity_score):
+
+    MAX_BOOST = 0.5
+
+    return bm25_score + (entity_score * MAX_BOOST)
+
+
+def passes_entity_gate(query_entities, chunk_entities):
+
+    for category, q_entities in query_entities.items():
+        chunk_set = set(chunk_entities.get(category, []))
+
+        for ent in q_entities:
+            if ent in chunk_set:
+                return True
+
+    return False
+
+
+def weighted_entity_score(query_entities, chunk_entities):
+    score = 0.0
+    max_possible = 0.0
+
+    for category, q_entities in query_entities.items():
+
+        weight = ENTITY_WEIGHTS.get(category, 0.5)
+
+        chunk_set = set(chunk_entities.get(category, []))
+
+        for ent in q_entities:
+            max_possible += weight
+
+            if ent in chunk_set:
+                score += weight
+
+    if max_possible == 0:
+        return 0.0
+
+    return score / max_possible  # normalize to [0,1]
+
+
+def entity_frequency_score(query_entities, chunk):
+    """
+    Higher entity frequency occurrence is more important
+       "Roosevelt mentioned once" --> lower score
+       "Roosevelt discussed throughout chunk" --> higher score
+
+    Use log to make sure frequent entities don't dominate everything
+    """
+
+    text = chunk["text"]
+    chunk_entities = chunk.get("entities_grouped", {})
+
+    score = 0.0
+
+    for category, q_entities in query_entities.items():
+
+        weight = ENTITY_WEIGHTS.get(category, 0.5)
+
+        for ent in q_entities:
+
+            if ent in chunk_entities.get(category, []):
+
+                # count occurrences
+                freq = text.count(ent)
+
+                # dampen with log (prevents spam boosting)
+                score += weight * math.log(1 + freq)
+
+    return score
+
+
+def split_sentences(text):
+    return re.split(r'[.!?]+', text)
+
+
+def entity_proximity_score(query_entities, chunk):
+    """
+    Detect whether entities are actually connected, not just co-present
+    """
+    text = chunk["text"]
+    sentences = split_sentences(text)
+
+    flat_query = [
+        ent for v in query_entities.values() for ent in v
+    ]
+
+    if len(flat_query) < 2:
+        return 0.0  # no proximity signal possible
+
+    score = 0.0
+
+    for sentence in sentences:
+
+        matches = [ent for ent in flat_query if ent in sentence]
+
+        if len(matches) >= 2:
+            # strong signal: multiple entities in same sentence
+            score += 1.0
+
+    return score
+
+
+def rerank_chunks(query, chunks):
+
+    query_entities = extract_query_entities(query)
+
+    reranked = []
+
+    for chunk in chunks:
+
+        # --- gate ---
+        if not passes_entity_gate(query_entities, chunk["entities_grouped"]):
+            continue
+
+        score = score_chunk(None, query_entities, chunk)
+
+        reranked.append((score, chunk))
+
+    reranked.sort(reverse=True)
+
+    return [c for _, c in reranked]
+
+
+def score_chunk(query_vec, query_entities, chunk):
+
+    bm25 = chunk["bm25_score"]
+
+    entity_overlap = weighted_entity_score(
+        query_entities,
+        chunk["entities_grouped"]
+    )
+
+    freq_score = entity_frequency_score(query_entities, chunk)
+
+    proximity_score = entity_proximity_score(query_entities, chunk)
+
+    # weights (tune these)
+    return (
+        bm25
+        + 0.4 * entity_overlap
+        + 0.3 * freq_score
+        + 0.5 * proximity_score
+    )
