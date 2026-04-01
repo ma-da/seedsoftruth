@@ -353,6 +353,7 @@ def group_entities(entities):
 def extract_and_group_entities(text):
     return group_entities(extract_entities(text))
 
+
 def extract_query_entities(text):
 
     raw_entities = extract_entities(text)
@@ -362,27 +363,23 @@ def extract_query_entities(text):
 
     for category, items in grouped.items():
 
+        # simple prioritization (not heavy scoring)
         scored = []
 
         for ent in items:
 
-            # --- position score (earlier = more important) ---
             pos = text.find(ent)
             position_score = 1.0 - (pos / max(len(text), 1))
 
-            # --- length / specificity ---
             length_score = len(ent.split()) * 0.2
 
-            # --- type weight ---
-            type_weight = ENTITY_TYPE_WEIGHTS.get(category, 0.5)
-
-            score = position_score + length_score + type_weight
+            score = position_score + length_score
 
             scored.append((score, ent))
 
         scored.sort(reverse=True)
 
-        # much smaller caps for queries
+        # TODO: add missing categories here
         top_n = {
             "persons": 3,
             "organizations": 2,
@@ -392,6 +389,7 @@ def extract_query_entities(text):
         salient[category] = [ent for _, ent in scored[:top_n]]
 
     return {k: v for k, v in salient.items() if v}
+
 
 # ------------------ RERANKING ------------------
 
@@ -428,7 +426,9 @@ def entity_frequency_score(query_entities, chunk_text):
 
         for ent in q_entities:
             ent_lower = ent.lower()
-            freq = text_lower.count(ent_lower)
+            pattern = re.compile(r'\b' + re.escape(ent_lower) + r'\b')
+
+            freq = len(pattern.findall(text_lower))
             if freq > 0:
                 score += weight * math.log(1 + freq)
 
