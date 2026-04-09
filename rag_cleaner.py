@@ -1,6 +1,10 @@
 import re
 from typing import Dict, Optional, List
 import spacy
+import logging_config
+import math
+
+rag_cleaner_logger = logging_config.get_logger("rag_cleaner")
 
 # ----------------------------
 # Regex patterns
@@ -349,6 +353,7 @@ def group_entities(entities):
 def extract_and_group_entities(text):
     return group_entities(extract_entities(text))
 
+
 def extract_query_entities(text):
 
     raw_entities = extract_entities(text)
@@ -358,27 +363,23 @@ def extract_query_entities(text):
 
     for category, items in grouped.items():
 
+        # simple prioritization (not heavy scoring)
         scored = []
 
         for ent in items:
 
-            # --- position score (earlier = more important) ---
             pos = text.find(ent)
             position_score = 1.0 - (pos / max(len(text), 1))
 
-            # --- length / specificity ---
             length_score = len(ent.split()) * 0.2
 
-            # --- type weight ---
-            type_weight = ENTITY_TYPE_WEIGHTS.get(category, 0.5)
-
-            score = position_score + length_score + type_weight
+            score = position_score + length_score
 
             scored.append((score, ent))
 
         scored.sort(reverse=True)
 
-        # much smaller caps for queries
+        # TODO: add missing categories here
         top_n = {
             "persons": 3,
             "organizations": 2,
@@ -389,171 +390,130 @@ def extract_query_entities(text):
 
     return {k: v for k, v in salient.items() if v}
 
+
 # ------------------ RERANKING ------------------
 
-ENTITY_WEIGHTS = {
+ENTITY_TYPE_WEIGHTS = {
     "persons": 1.0,
-    "organizations": 0.8,
     "events": 1.0,
-    "locations": 0.5
+    "organizations": 0.7,
+    "locations": 0.4,
+    "works": 0.5,
+    "dates": 0.2
 }
 
-def entity_overlap_score(query_set, chunk_entities):
 
-    chunk_set = set(
-        e for v in chunk_entities.values() for e in v
-    )
-
-    overlap = query_set & chunk_set
-
-    if not overlap:
-        return 0.0
-
-    # normalized overlap (prevents long chunks dominating)
-    return len(overlap) / len(query_set)
-
-
-def boost_score(bm25_score, entity_score):
-
-    MAX_BOOST = 0.5
-
-    return bm25_score + (entity_score * MAX_BOOST)
-
-
-def passes_entity_gate(query_entities, chunk_entities):
-
-    for category, q_entities in query_entities.items():
-        chunk_set = set(chunk_entities.get(category, []))
-
-        for ent in q_entities:
-            if ent in chunk_set:
-                return True
-
-    return False
-
-
-def weighted_entity_score(query_entities, chunk_entities):
+def weighted_entity_overlap(query_entities, chunk_entities):
     score = 0.0
-    max_possible = 0.0
 
     for category, q_entities in query_entities.items():
-
-        weight = ENTITY_WEIGHTS.get(category, 0.5)
-
+        weight = ENTITY_TYPE_WEIGHTS.get(category, 0.5)
         chunk_set = set(chunk_entities.get(category, []))
 
         for ent in q_entities:
-            max_possible += weight
-
             if ent in chunk_set:
                 score += weight
-
-    if max_possible == 0:
-        return 0.0
-
-    return score / max_possible  # normalize to [0,1]
-
-
-def entity_frequency_score(query_entities, chunk):
-    """
-    Higher entity frequency occurrence is more important
-       "Roosevelt mentioned once" --> lower score
-       "Roosevelt discussed throughout chunk" --> higher score
-
-    Use log to make sure frequent entities don't dominate everything
-    """
-
-    text = chunk["text"]
-    chunk_entities = chunk.get("entities_grouped", {})
-
-    score = 0.0
-
-    for category, q_entities in query_entities.items():
-
-        weight = ENTITY_WEIGHTS.get(category, 0.5)
-
-        for ent in q_entities:
-
-            if ent in chunk_entities.get(category, []):
-
-                # count occurrences
-                freq = text.count(ent)
-
-                # dampen with log (prevents spam boosting)
-                score += weight * math.log(1 + freq)
 
     return score
 
 
+def entity_frequency_score(query_entities, chunk_text):
+    score = 0.0
+
+    for category, q_entities in query_entities.items():
+        weight = ENTITY_TYPE_WEIGHTS.get(category, 0.5)
+        text_lower = chunk_text.lower()
+
+        for ent in q_entities:
+            ent_lower = ent.lower()
+            pattern = re.compile(r'\b' + re.escape(ent_lower) + r'\b')
+
+            freq = len(pattern.findall(text_lower))
+            if freq > 0:
+                score += weight * math.log(1 + freq)
+
+    return min(score, 2.0)  # cap
+
+
 def split_sentences(text):
-    return re.split(r'[.!?]+', text)
+    return re.split(r"[.!?]+", text)
 
 
-def entity_proximity_score(query_entities, chunk):
-    """
-    Detect whether entities are actually connected, not just co-present
-    """
-    text = chunk["text"]
-    sentences = split_sentences(text)
+def entity_proximity_score(query_entities, chunk_text):
+    sentences = split_sentences(chunk_text)
 
     flat_query = [
         ent for v in query_entities.values() for ent in v
     ]
 
     if len(flat_query) < 2:
-        return 0.0  # no proximity signal possible
+        return 0.0
 
     score = 0.0
 
     for sentence in sentences:
-
-        matches = [ent for ent in flat_query if ent in sentence]
+        sentence_lower = sentence.lower()
+        matches = [ent for ent in flat_query if ent in sentence_lower]
 
         if len(matches) >= 2:
-            # strong signal: multiple entities in same sentence
             score += 1.0
 
-    return score
+    return min(score, 2.0)  # cap
 
 
-def rerank_chunks(query, chunks):
+def passes_entity_gate(query_entities, chunk_entities):
+    for category, q_entities in query_entities.items():
+        chunk_set = set(chunk_entities.get(category, []))
+        for ent in q_entities:
+            if ent in chunk_set:
+                return True
+    return False
 
-    query_entities = extract_query_entities(query)
 
+def rerank_chunks(query, chunks, query_entities):
     reranked = []
+    filtered = []
 
+    # first pass filters out low-value chunks
     for chunk in chunks:
+        chunk_entities = chunk.get("entities_grouped", {})
+        if not query_entities or passes_entity_gate(query_entities, chunk_entities):
+            filtered.append(chunk)
 
-        # --- gate ---
-        if not passes_entity_gate(query_entities, chunk["entities_grouped"]):
-            continue
+    # fallback if too strict
+    if not filtered:
+        filtered = chunks
+        rag_cleaner_logger.info(f"rerank_chunks filtered fallback to default, size {len(filtered)}")
+    else:
+        num_filtered = len(chunks) - len(filtered)
+        rag_cleaner_logger.info(f"rerank_chunks filtered out {num_filtered} chunks, curr size {len(filtered)}")
 
-        score = score_chunk(None, query_entities, chunk)
+    for chunk in filtered:
+        chunk_entities = chunk.get("entities_grouped", {})
+        text = chunk.get("text", "")
+        text_lower = text.lower()
 
-        reranked.append((score, chunk))
+        bm25 = chunk.get("score_bm25", 0.0)
+        overlap = weighted_entity_overlap(query_entities, chunk_entities)
+        freq = entity_frequency_score(query_entities, text_lower)
+        proximity = entity_proximity_score(query_entities, text_lower)
+
+        final_score = (
+            bm25
+            + 0.4 * overlap
+            + 0.3 * freq
+            + 0.5 * proximity
+        )
+
+        rag_cleaner_logger.info(f"rerank chunk: final_score {final_score}, bm25 {bm25}, overlap {overlap}, freq {freq}, proximity {proximity}")
+        reranked.append((final_score, chunk))
 
     reranked.sort(reverse=True)
 
+    # log top final scores
+    top_scores = ""
+    for chunk_info in reranked[:5]:
+        top_scores += str(chunk_info[0]) + ", "
+    rag_cleaner_logger.info(f"final reranked chunks: {top_scores}")
+
     return [c for _, c in reranked]
-
-
-def score_chunk(query_vec, query_entities, chunk):
-
-    bm25 = chunk["bm25_score"]
-
-    entity_overlap = weighted_entity_score(
-        query_entities,
-        chunk["entities_grouped"]
-    )
-
-    freq_score = entity_frequency_score(query_entities, chunk)
-
-    proximity_score = entity_proximity_score(query_entities, chunk)
-
-    # weights (tune these)
-    return (
-        bm25
-        + 0.4 * entity_overlap
-        + 0.3 * freq_score
-        + 0.5 * proximity_score
-    )

@@ -488,13 +488,30 @@ def build_context_improved(
     max_snips_per_doc: int = 5,
     max_sent_per_doc: int = 50,
     window_radius: int = 1,  # include ±1 neighboring sentence
+    use_rerank: bool = False,
 ) -> str:
 
     terms = _to_term_set(query)
     global_tris: set[str] = set()
     blocks: List[str] = []
 
-    picked = (docs or [])[: int(context_k)]
+    # ==== RERANKING FEATURE ====
+    ranked_docs = docs or []
+
+    if use_rerank:
+        try:
+            query_entities = rag_cleaner.extract_query_entities(query)
+            ranked_docs = rag_cleaner.rerank_chunks(
+                query,
+                ranked_docs,
+                query_entities,
+            )
+        except Exception as e:
+            rag_logger.warning(f"rerank failed: {e}")
+            ranked_docs = docs or []
+    # ============================
+
+    picked = ranked_docs[: int(context_k)]
 
     for i, d in enumerate(picked, start=1):
         text = (d.get("text") or d.get("snippet") or "").strip()
