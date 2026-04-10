@@ -1,2580 +1,1129 @@
-// app.js — Seeds of Truth UI logic (Flask routes + password gate)
-
-'use strict';
-
-/* =========================================================
-   0) TUNABLES / CONSTANTS
-   ========================================================= */
-const CFG = {
-  // Version Info,
-  VERSION_NUM: "0.2",
-  VERSION_NAME: "Bunny",
-
-  // LocalStorage keys
-  LS_THEME: 'sot-theme',
-  LS_SIDEBAR_COLLAPSED: 'sot-sidebar-collapsed',
-  LS_TOOLS: 'sot-tools',
-  LS_SAVED_CONVOS: 'sot-saved-conversations-v1',
-  LS_FEEDBACK: 'sot-feedback-v1',
-
-  // Limits
-  MAX_CONTEXT_TURNS: 5,
-  MAX_CONVO_TURNS: 50,
-  MAX_SAVED_CONVOS: 25,
-  MAX_FEEDBACK_ITEMS: 200,
-  MAX_REFS: 10,
-
-  // UI behavior
-  DEFAULT_THEME: 'light',      // 'light' | 'dark'
-  DEFAULT_HISTORY_TURNS: 2,    // 0..5
-  DEFAULT_MODE: 'chat',        // 'search' | 'chat' | 'ab'
-  TEXTAREA_MAX_HEIGHT: 140,    // px
-
-  // Polling
-  STATUS_POLL_MS: 15000,
-  QUEUE_POLL_MS: 15000,
-
-  // Flask endpoints
-  API: {
-    UNLOCK: '/api/unlock',
-    ACCESS: '/api/access',
-    SEARCH: '/api/search',
-    CHAT: '/api/chat',
-    AB: '/api/ab',
-    FEEDBACK: '/api/feedback',
-    STATUS: '/api/status',
-    QUEUE: '/api/queue',
-    PING: '/api/ping'
-  },
-
-  // Error codes
-  JOB_ID_NONE: "none",
-};
-
-const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
-
-/* =========================================================
-   1) DOM LOOKUPS (set in init)
-   ========================================================= */
-const els = {}; // populated in initDom()
-
-/* =========================================================
-   2) STATE
-   ========================================================= */
-const toolState = {
-  historyTurns: CFG.DEFAULT_HISTORY_TURNS,
-  mode: CFG.DEFAULT_MODE,
-  modelType: "hf"
-};
-
-// client-side turns: { user: string, assistant: string }
-const convoTurns = [];
-let botMsgCounter = 0;
-
-// feedback modal state
-let feedbackTarget = null;
-
-// lock gate
-let isUnlocked = false;
-
-/* =========================================================
-   3) UTILITIES
-   ========================================================= */
-function clampInt(n, min, max, fallback) {
-  const x = parseInt(n, 10);
-  if (Number.isNaN(x)) return fallback;
-  return Math.max(min, Math.min(max, x));
-}
-
-function clamp1to10(n) {
-  const x = parseInt(n, 10);
-  if (Number.isNaN(x)) return null;
-  return Math.max(1, Math.min(10, x));
-}
-
-function safeJsonParse(str, fallback) {
-  try { return JSON.parse(str); } catch (_) { return fallback; }
-}
-
-function nowId(prefix) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
-
-function formatDuration(totalSeconds) {
-  const s = Math.max(0, totalSeconds | 0);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m <= 0) return `${r}s`;
-  return `${m}m ${r}s`;
-}
-
-const DEFAULT_NOTE =
-  'Seeds of Truth AI can make mistakes. Please verify important information.';
-
-function setNoteMessage(msg, { busy = false } = {}) {
-  if (els.noteMessage) els.noteMessage.textContent = msg || DEFAULT_NOTE;
-
-  if (els.noteTextWrap) {
-    els.noteTextWrap.classList.toggle('is-busy', !!busy);
-  }
-
-  // spinner visibility is controlled via .is-busy class
-}
-
-function setUiBusy(isBusy) {
-  // prevent repeated submits + make it feel responsive
-  if (els.chatInput) els.chatInput.disabled = !!isBusy;
-
-  // if you have a submit button, disable it too (safe even if null)
-  const submitBtn = els.chatForm?.querySelector('button[type="submit"]');
-  if (submitBtn) submitBtn.disabled = !!isBusy;
-}
-
-/**
- * Starts a busy state + staged status messages.
- * Returns a cleanup function you MUST call (preferably in finally).
- */
-function beginStatus(opLabel) {
-  setUiBusy(true);
-  setNoteMessage(opLabel, { busy: true });
-
-  const timers = [];
-
-  // staged “reassurance” updates for slow inference
-  timers.push(setTimeout(() => setNoteMessage(`${opLabel}…`, { busy: true }), 800));
-  timers.push(setTimeout(() => setNoteMessage('Still working…', { busy: true }), 5000));
-  timers.push(setTimeout(() => setNoteMessage('This can take ~30 seconds on some queries…', { busy: true }), 12000));
-
-  return function endStatus(finalMsg = null) {
-    timers.forEach(clearTimeout);
-    setUiBusy(false);
-    setNoteMessage(finalMsg || DEFAULT_NOTE, { busy: false });
-  };
-}
-
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-
-/**
- * Types fullText into textEl with a blinking cursor.
- * Uses textContent only (safe, no HTML injection).
- */
-async function typeIntoElement(textEl, fullText, opts = {}) {
-  const {
-    cps = 60,               // characters per second target
-    chunkMin = 1,
-    chunkMax = 4,
-    maxTyped = 800          // type first N chars then snap remainder (UX)
-  } = opts;
-
-  const text = String(fullText ?? '');
-  const toType = text.slice(0, Math.min(text.length, maxTyped));
-  const remainder = text.slice(toType.length);
-
-  // Build cursor node
-  const cursor = document.createElement('span');
-  cursor.className = 'typing-cursor';
-  cursor.textContent = '▍';
-
-  // Clear and attach
-  textEl.textContent = '';
-  textEl.appendChild(cursor);
-
-  let i = 0;
-
-  while (i < toType.length) {
-    const n = Math.min(
-      toType.length - i,
-      chunkMin + Math.floor(Math.random() * (chunkMax - chunkMin + 1))
-    );
-
-    const slice = toType.slice(i, i + n);
-    i += n;
-
-    cursor.insertAdjacentText('beforebegin', slice);
-    scrollChatToBottom?.();
-
-    // pacing
-    let ms = (1000 / cps) * n;
-    const last = slice.slice(-1);
-    if (last === '\n') ms += 120;
-    else if ('.!?'.includes(last)) ms += 140;
-    else if (',;:'.includes(last)) ms += 60;
-
-    await sleep(ms);
-  }
-
-  // Snap remainder instantly (optional but recommended)
-  if (remainder) cursor.insertAdjacentText('beforebegin', remainder);
-
-  // Remove cursor when done
-  cursor.remove();
-  scrollChatToBottom?.();
-}
-/*------ MARKDOWN HELPER------------------*/
-
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-// Very small markdown-to-HTML. Safe-ish because we escape first, then add a limited set of tags.
-function renderMiniMarkdown(md) {
-  // Input should be plain text (NOT HTML). We'll return safe-ish HTML.
-  let s = String(md ?? '');
-
-  // Normalize newlines
-  s = s.replace(/\r\n/g, '\n');
-
-  // ---------- Escape HTML first ----------
-  // (We will re-introduce only a/strong/em/code/br)
-  s = s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-  // ---------- Helpers ----------
-  // Use placeholders so later formatting doesn't touch generated <a> tags.
-  const placeholders = [];
-  const put = (html) => {
-    const key = `\uE000${placeholders.length}\uE001`;
-    placeholders.push(html);
-    return key;
-  };
-  const restore = (text) =>
-    text.replace(/\uE000(\d+)\uE001/g, (_, i) => placeholders[Number(i)] ?? '');
-
-  const escapeAttr = (x) => String(x).replace(/"/g, '%22');
-
-  // ---------- Markdown links: [text](url) and [text](<url>) ----------
-  // Notes:
-  // - We stop url at whitespace OR ')' but allow common URL chars.
-  // - We also trim a trailing punctuation char if it "obviously" isn't part of the URL.
-  const linkRe = /\[([^\]\n]+)\]\(\s*(<)?(https?:\/\/[^\s)]+)(>)?\s*\)/g;
-  s = s.replace(linkRe, (m, text, _lt, url, _gt) => {
-    let u = url;
-
-    // Strip common trailing punctuation that is typically outside the URL
-    // e.g. "...(https://x.com)." -> remove trailing '.'
-    u = u.replace(/[.,;:!?]+$/g, '');
-
-    const safeUrl = escapeAttr(u);
-    const safeText = text; // already HTML-escaped above
-    return put(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeText}</a>`);
-  });
-
-  // ---------- Inline code: `code` ----------
-  // Do this before bold/italic so markers inside code aren't parsed.
-  s = s.replace(/`([^`\n]+)`/g, (m, code) => put(`<code>${code}</code>`));
-
-  // ---------- Bold: **text** ----------
-  // Use a non-greedy pattern and avoid crossing newlines.
-  s = s.replace(/\*\*([^\n*][\s\S]*?[^\n*])\*\*/g, '<strong>$1</strong>');
-
-  // ---------- Italic: *text* ----------
-  // Avoid italicizing inside words and avoid matching **bold** fragments.
-  // Also avoids matching lone '*' in things like pointers.
-  s = s.replace(/(^|[\s(])\*([^\n*][\s\S]*?[^\n*])\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
-
-  // ---------- Line breaks ----------
-  s = s.replace(/\n/g, '<br>');
-
-  // Restore protected HTML segments
-  return restore(s);
-}
-
-function decodeHtmlEntities(str) {
-  // Decodes &#...; &amp; &quot; etc
-  const txt = document.createElement('textarea');
-  txt.innerHTML = String(str ?? '');
-  return txt.value;
-}
-
-function cleanRagArtifacts(str) {
-  let s = String(str ?? '');
-
-  // Common LLM stop tokens / scaffolding
-  s = s.replace(/<\|im_end\|>/g, '');
-  s = s.replace(/<\/s>/g, '');
-  s = s.replace(/<\|endoftext\|>/g, '');
-
-  // Sometimes these appear HTML-escaped already
-  s = s.replace(/&lt;\|im_end\|&gt;/g, '');
-  s = s.replace(/&lt;\/s&gt;/g, '');
-  s = s.replace(/&lt;\|endoftext\|&gt;/g, '');
-
-  // Collapse weird whitespace
-  s = s.replace(/\r\n/g, '\n');
-  s = s.replace(/[ \t]+\n/g, '\n');
-  s = s.replace(/\n{3,}/g, '\n\n');
-
-  return s.trim();
-}
-
-/* =========================================================
-   4) MODAL (custom alert/confirm)
-   ========================================================= */
-let modalResolve = null;
-
-function openModal({ title, message, buttons }) {
-  els.modalTitle.textContent = title || 'Notice';
-  els.modalMessage.textContent = message || '';
-  els.modalActions.innerHTML = '';
-
-  buttons.forEach((b) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `modal-btn${b.variant ? ' ' + b.variant : ''}`;
-    btn.textContent = b.label;
-    btn.addEventListener('click', () => closeModal(b.value));
-    els.modalActions.appendChild(btn);
-  });
-
-  els.modalOverlay.classList.add('show');
-  els.modalOverlay.setAttribute('aria-hidden', 'false');
-
-  const firstBtn = els.modalActions.querySelector('button');
-  if (firstBtn) firstBtn.focus();
-
-  document.addEventListener('keydown', onModalKeydown);
-}
-
-function onModalKeydown(e) {
-  if (e.key === 'Escape') closeModal(false);
-}
-
-function closeModal(result) {
-  if (!els.modalOverlay) return;
-  els.modalOverlay.classList.remove('show');
-  els.modalOverlay.setAttribute('aria-hidden', 'true');
-  els.modalActions.innerHTML = '';
-
-  const resolve = modalResolve;
-  modalResolve = null;
-  if (resolve) resolve(result);
-
-  document.removeEventListener('keydown', onModalKeydown);
-}
-
-function modalConfirm({
-  title = 'Confirm',
-  message = 'Are you sure?',
-  confirmText = 'Confirm',
-  cancelText = 'Cancel',
-  danger = false
-} = {}) {
-  return new Promise((resolve) => {
-    modalResolve = resolve;
-    openModal({
-      title,
-      message,
-      buttons: [
-        { label: cancelText, value: false },
-        { label: confirmText, value: true, variant: danger ? 'danger' : 'primary' }
-      ]
-    });
-  });
-}
-
-function modalAlert({
-  title = 'Notice',
-  message = '',
-  okText = 'OK'
-} = {}) {
-  return new Promise((resolve) => {
-    modalResolve = resolve;
-    openModal({
-      title,
-      message,
-      buttons: [{ label: okText, value: true, variant: 'primary' }]
-    });
-  });
-}
-
-/* =========================================================
-   5) THEME
-   ========================================================= */
-function applyTheme(mode) {
-  if (mode === 'light') els.body.classList.add('light');
-  else els.body.classList.remove('light');
-  try { localStorage.setItem(CFG.LS_THEME, mode); } catch (_) {}
-}
-
-function initTheme() {
-  let mode = CFG.DEFAULT_THEME;
-  try {
-    const stored = localStorage.getItem(CFG.LS_THEME);
-    if (stored === 'light' || stored === 'dark') mode = stored;
-  } catch (_) {}
-  applyTheme(mode);
-
-  els.themeToggleButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const isLightNow = els.body.classList.contains('light');
-      applyTheme(isLightNow ? 'dark' : 'light');
-    });
-  });
-}
-
-/* =========================================================
-   6) SIDEBAR COLLAPSE / MOBILE MENU
-   ========================================================= */
-function setSidebarCollapsed(collapsed) {
-  els.body.classList.toggle('sidebar-collapsed', !!collapsed);
-  try { localStorage.setItem(CFG.LS_SIDEBAR_COLLAPSED, collapsed ? '1' : '0'); } catch (_) {}
-}
-
-function initSidebarCollapse() {
-  try {
-    if (localStorage.getItem(CFG.LS_SIDEBAR_COLLAPSED) === '1') setSidebarCollapsed(true);
-  } catch (_) {}
-
-  if (els.sidebarCollapseBtn) els.sidebarCollapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
-  if (els.sidebarOpenBtn) els.sidebarOpenBtn.addEventListener('click', () => setSidebarCollapsed(false));
-}
-
-function initMobileSidebar() {
-  if (els.menuBtn) {
-    els.menuBtn.addEventListener('click', () => {
-      els.sidebar.classList.toggle('visible');
-      els.overlay.classList.toggle('visible');
-    });
-  }
-  if (els.overlay) {
-    els.overlay.addEventListener('click', () => {
-      els.sidebar.classList.remove('visible');
-      els.overlay.classList.remove('visible');
-    });
-  }
-}
-
-/* =========================================================
-   7) TOOLS POPUP + TOOL STATE
-   ========================================================= */
-
-function loadToolState() {
-  try {
-    const raw = localStorage.getItem(CFG.LS_TOOLS);
-    if (!raw) return;
-
-    const parsed = safeJsonParse(raw, {});
-
-    if (typeof parsed.historyTurns === 'number') {
-      toolState.historyTurns = clampInt(
-        parsed.historyTurns,
-        0,
-        CFG.MAX_CONTEXT_TURNS,
-        CFG.DEFAULT_HISTORY_TURNS
-      );
-    }
-
-    if (['search', 'chat', 'ab'].includes(parsed.mode)) toolState.mode = parsed.mode;
-
-    // NEW: RAG toggle (default ON if missing)
-    if (typeof parsed.useRag === 'boolean') {
-      toolState.useRag = parsed.useRag;
-    } else if (typeof toolState.useRag !== 'boolean') {
-      toolState.useRag = true;
-    }
-  } catch (_) {}
-}
-
-function saveToolState() {
-  // NEW: keep backwards compatibility + ensure useRag exists
-  if (typeof toolState.useRag !== 'boolean') toolState.useRag = true;
-  try {
-    localStorage.setItem(CFG.LS_TOOLS, JSON.stringify(toolState));
-  } catch (_) {}
-}
-
-function renderToolState() {
-  if (els.historySlider) els.historySlider.value = String(toolState.historyTurns);
-  if (els.historyValue) els.historyValue.textContent = String(toolState.historyTurns);
-  if (els.historyHelpN) els.historyHelpN.textContent = String(toolState.historyTurns);
-
-  // if locked, force search
-  if (!isUnlocked && (toolState.mode === 'chat' || toolState.mode === 'ab')) {
-    toolState.mode = 'search';
-  }
-
-  const id =
-    toolState.mode === 'search' ? 'mode-search' :
-    toolState.mode === 'ab'     ? 'mode-ab' :
-                                  'mode-chat';
-  const el = document.getElementById(id);
-  if (el) el.checked = true;
-
-  if (els.modeHelp) {
-    els.modeHelp.textContent =
-      toolState.mode === 'search' ? 'Search the corpus without AI' :
-      toolState.mode === 'ab'     ? 'A/B test two responses and select the best one' :
-                                    'AI chat: normal chat mode';
-  }
-
-  if (els.referencesTitle) {
-    els.referencesTitle.textContent = (toolState.mode === 'search') ? 'Search Results' : 'References';
-  }
-
-  // NEW: render RAG toggle state (do not affect conversation memory)
-  const ragToggle = els.ragToggle || document.getElementById('rag-toggle');
-  if (ragToggle) ragToggle.checked = !!toolState.useRag;
-
-  // Optional: update help text dynamically if you included #rag-help
-  const ragHelp = document.getElementById('rag-help');
-  if (ragHelp) {
-    ragHelp.textContent = toolState.useRag
-      ? 'Uses retrieved context (RAG) to ground responses.'
-      : 'Model-only: skips retrieval, but still uses conversation memory.';
-  }
-}
-
-function initToolsPopup() {
-  if (!els.toolsBtn || !els.toolsPopup) return;
-
-  // Ensure we have the rag toggle element (works even if you didn't add to els)
-  if (!els.ragToggle) els.ragToggle = document.getElementById('rag-toggle');
-
-  els.toolsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    els.toolsPopup.classList.toggle('visible');
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!els.toolsPopup.contains(e.target) && e.target !== els.toolsBtn) {
-      els.toolsPopup.classList.remove('visible');
-    }
-  });
-
-  // slider change
-  if (els.historySlider) {
-    els.historySlider.addEventListener('input', () => {
-      toolState.historyTurns = clampInt(
-        els.historySlider.value,
-        0,
-        CFG.MAX_CONTEXT_TURNS,
-        CFG.DEFAULT_HISTORY_TURNS
-      );
-      renderToolState();
-      saveToolState();
-    });
-  }
-
-  // radios change
-  if (els.modeRadios && els.modeRadios.length) {
-    els.modeRadios.forEach(r => {
-      r.addEventListener('change', () => {
-        if (!r.checked) return;
-
-        const val = r.value;
-        if (!isUnlocked && (val === 'chat' || val === 'ab')) {
-          // bounce back to search
-          const search = document.getElementById('mode-search');
-          if (search) search.checked = true;
-          toolState.mode = 'search';
-          renderToolState();
-          saveToolState();
-          pushStatusMessage('Locked: search mode only.');
-          return;
-        }
-
-        toolState.mode = val;
-        renderToolState();
-        saveToolState();
-      });
-    });
-  }
-
-  // NEW: RAG toggle change
-  if (els.ragToggle) {
-    els.ragToggle.addEventListener('change', () => {
-      toolState.useRag = !!els.ragToggle.checked;
-      renderToolState(); // keeps help text in sync, harmless otherwise
-      saveToolState();
-
-      // Optional feedback
-      if (typeof pushStatusMessage === 'function') {
-        pushStatusMessage(toolState.useRag ? 'RAG enabled.' : 'RAG disabled (model-only).');
-      }
-    });
-  }
-  // Model selection change
-  if (modelSelect && toolState.modelType) {
-    modelSelect.value = toolState.modelType;
-  }
-}
-
-// Model selection
-const modelSelect = document.getElementById("model-type");
-
-if (modelSelect) {
-  modelSelect.addEventListener("change", () => {
-    toolState.modelType = modelSelect.value;
-    saveToolState();
-  });
-}
-
-/* =========================================================
-   8) STATUS PANEL
-   ========================================================= */
-function setEndpointStatus(status) {
-  if (!els.endpointDot) return;
-
-  els.endpointDot.classList.remove('red','yellow','green');
-
-  if (status === 'off') {
-    els.endpointDot.classList.add('red');
-    els.endpointLabel.textContent = 'Endpoint offline';
-    els.endpointChip.textContent = 'offline';
-  } else if (status === 'starting') {
-    els.endpointDot.classList.add('yellow');
-    els.endpointLabel.textContent = 'Endpoint starting…';
-    els.endpointChip.textContent = 'starting';
-  } else if (status === 'ready') {
-    els.endpointDot.classList.add('green');
-    els.endpointLabel.textContent = 'Endpoint ready';
-    els.endpointChip.textContent = 'ready';
-  } else {
-    els.endpointLabel.textContent = 'Checking endpoint…';
-    els.endpointChip.textContent = 'unknown';
-  }
-}
-
-function setQueueStatus(queriesInLine) {
-  const q = Math.max(0, parseInt(queriesInLine, 10) || 0);
-  if (els.queueCountEl) els.queueCountEl.textContent = String(q);
-  if (els.queueEtaEl) els.queueEtaEl.textContent = formatDuration(q * 45);
-}
-
-function pushStatusMessage(text) {
-  const msg = String(text || '').trim();
-  if (!msg || !els.statusMessagesEl) return;
-
-  const placeholder = els.statusMessagesEl.querySelector('.status-message.muted');
-  if (placeholder) placeholder.remove();
-
-  const el = document.createElement('div');
-  el.className = 'status-message';
-  const ts = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  el.textContent = `[${ts}] ${msg}`;
-  els.statusMessagesEl.prepend(el);
-
-  const items = els.statusMessagesEl.querySelectorAll('.status-message');
-  if (items.length > 1) items[items.length - 1].remove();
-}
-
-/* =========================================================
-   9) FEEDBACK MODAL (local save for now)
-   ========================================================= */
-function showToast() {
-  if (!els.fbToast) return;
-  els.fbToast.classList.add('show');
-  els.fbToast.setAttribute('aria-hidden', 'false');
-  setTimeout(() => {
-    els.fbToast.classList.remove('show');
-    els.fbToast.setAttribute('aria-hidden', 'true');
-  }, 1400);
-}
-
-function openFeedbackModal(target) {
-  const isRef = target?.type === 'reference';
-  feedbackTarget = target;
-
-  // reset
-  if (els.fbAccuracy) els.fbAccuracy.value = 8;
-  if (els.fbStyle) els.fbStyle.value = 8;
-  if (els.fbRelevance) els.fbRelevance.value = 8;
-  if (els.fbComments) els.fbComments.value = '';
-
-  if (els.fbFieldAccuracy) els.fbFieldAccuracy.style.display = isRef ? 'none' : '';
-  if (els.fbFieldStyle) els.fbFieldStyle.style.display = isRef ? 'none' : '';
-  if (els.fbJobId) els.fbJobId.value = target?.job_id;
-
-  const label = isRef ? 'Reference' : 'Response';
-  const snip = (target?.snippet || '').trim().replace(/\s+/g, ' ');
-  const short = snip.length > 120 ? snip.slice(0, 120) + '…' : snip;
-  if (els.fbMeta) els.fbMeta.textContent = `${label} ID: ${target?.id || 'n/a'}${short ? ' — ' + short : ''}`;
-
-  els.fbOverlay.classList.add('show');
-  els.fbOverlay.setAttribute('aria-hidden', 'false');
-
-  (isRef ? els.fbRelevance : els.fbAccuracy)?.focus?.();
-}
-
-function closeFeedbackModal() {
-  if (!els.fbOverlay) return;
-  els.fbOverlay.classList.remove('show');
-  els.fbOverlay.setAttribute('aria-hidden', 'true');
-  feedbackTarget = null;
-}
-
-function saveFeedbackLocally(payload) {
-  try {
-    const arr = safeJsonParse(localStorage.getItem(CFG.LS_FEEDBACK) || '[]', []);
-    arr.unshift(payload);
-    if (arr.length > CFG.MAX_FEEDBACK_ITEMS) arr.length = CFG.MAX_FEEDBACK_ITEMS;
-    localStorage.setItem(CFG.LS_FEEDBACK, JSON.stringify(arr));
-  } catch (_) {}
-}
-
-async function submitFeedback() {
-  if (!feedbackTarget) return;
-
-  const isRef = feedbackTarget?.type === 'reference';
-
-  const relevance = clamp1to10(els.fbRelevance.value);
-  const accuracy = isRef ? undefined : clamp1to10(els.fbAccuracy.value);
-  const style = isRef ? undefined : clamp1to10(els.fbStyle.value);
-  const comments = (els.fbComments.value || '').trim();
-  const job_id = (els.fbJobId?.value ?? '').trim();
-
-  const payload = {
-    target: {
-      type: feedbackTarget?.type || 'unknown',
-      id: feedbackTarget?.id || null,
-      snippet: feedbackTarget?.snippet || ''
-    },
-    ratings: {
-      relevance,
-      ...(isRef ? {} : { accuracy, style })
-    },
-    comments,
-    createdAt: Date.now()
-  };
-
-  if (!relevance) {
-    await modalAlert({ title: 'Missing rating', message: 'Please enter 1–10 for Relevance.' });
-    return;
-  }
-  if (!isRef && (!accuracy || !style)) {
-    await modalAlert({ title: 'Missing ratings', message: 'Please enter 1–10 for Accuracy and Style.' });
-    return;
-  }
-
-  // save feedback locally
-  saveFeedbackLocally(payload);
-
-  // send feedback only if unlocked and using chat mode
-  // fyi we need a valid job id in order to send a feedback request to the server
-  if (isUnlocked && (toolState.mode === 'chat' || toolState.mode === 'ab') && job_id != CFG.JOB_ID_NONE) {
-    await sendFeedback(
-        job_id,
-        relevance,
-        accuracy,
-        style,
-        comments
-    )
-  }
-
-  closeFeedbackModal();
-  showToast();
-}
-
-async function sendFeedback(
-  job_id,
-  relevance,
-  accuracy,
-  style,
-  comments = ""
-) {
-  const res = await fetch(CFG.API.FEEDBACK, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      job_id,
-      relevance,
-      accuracy,
-      style,
-      comments
+"""
+Seeds of Truth Flask App
+
+Integrates rag_controller.py:
+- boot() builds immutable RetrievalState (downloads registry + artifacts) :contentReference[oaicite:3]{index=3}
+- search_references(...) returns retrieval-only JSON results :contentReference[oaicite:4]{index=4}
+- ask(...) does retrieval + calls LLM proxy FLASK_PROXY_URL :contentReference[oaicite:5]{index=5}
+
+Endpoints:
+- GET  /                  -> templates/index.html
+- POST /api/ping           -> demo ping
+- POST /api/unlock         -> password sets session gate
+- GET  /api/access         -> access state
+- POST /api/search         -> ALWAYS allowed (retrieval-only)
+- POST /api/chat           -> gated, uses rag_controller.ask(...)
+- POST /api/ab             -> gated, calls ask twice (simple A/B dev)
+- GET  /api/status         -> health
+- GET  /api/queue          -> dev queue stub
+
+Notes:
+- This initializes retrieval_state once per gunicorn worker process.
+- boot() and retrieval call out to the network (Hive + JSON artifacts), so startup can be slow.
+- For dev reliability, ensure_state() lazily retries initialization.
+"""
+
+from __future__ import annotations
+
+import os
+import hmac
+import time
+import threading
+import logging
+import uuid
+from datetime import datetime, time
+from typing import List, Optional, Dict, Any
+from zoneinfo import ZoneInfo
+import time as time_module
+import platform
+
+from numpy.ma.core import true_divide
+
+import model_adapters
+import rag_controller
+
+from flask import Flask, render_template, request, jsonify, session, abort
+
+import traceback
+import inspect
+import utils
+
+import db
+from rag_controller import ENABLE_MIN_GATING
+
+
+# ------------------ Logging ------------------
+
+def _setup_logger() -> logging.Logger:
+    try:
+        import logging_config  # type: ignore
+        return logging_config.setup_logging(logging.INFO)
+    except Exception:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+        return logging.getLogger("seedsoftruth")
+
+
+app_logger = _setup_logger()
+
+# ------------------ App setup ------------------
+
+app = Flask(__name__)
+
+# Set via systemd override:
+#   Environment="FLASK_SECRET_KEY=...long random..."
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
+
+# Dev-style template reloading (turn off in prod)
+if os.environ.get("TEMPLATES_AUTO_RELOAD", "1") == "1":
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.jinja_env.auto_reload = True
+
+# Due to GIL, booleans should be thread-safe.
+app_is_shutdown = False
+
+# inflight requests
+inflight_chat_reqs = utils.SafeInt(0)
+
+# User rate limiter
+RATE_LIMITING_INTERVAL = 30
+rate_limiter = utils.SimpleUserRateLimiter(RATE_LIMITING_INTERVAL)
+
+# Server time gating
+ENABLE_TIME_GATING = False
+EASTERN_TZ = ZoneInfo("America/New_York")
+START_TIME = time(9, 0)   # 9:00 AM
+END_TIME   = time(22, 0)  # 10:00 PM
+
+# features flags
+USE_DOUBLE_PROMPT = True
+
+
+# ------------------ Password gating ------------------
+
+def _parse_passwords(env_value: str) -> List[str]:
+    return [p.strip() for p in (env_value or "").split(",") if p.strip()]
+
+
+ALLOWED_PASSWORDS = _parse_passwords(os.environ.get("SOT_PASSWORDS", ""))
+
+
+def _is_unlocked() -> bool:
+    return bool(session.get("unlocked", False))
+
+
+def _require_unlocked():
+    if not _is_unlocked():
+        return jsonify({"ok": False, "error": "locked", "message": "Not today"}), 403
+    return None
+
+
+
+# ------------------ Retrieval state (boot + ensure) ------------------
+
+retrieval_state = None
+_state_lock = threading.Lock()
+_last_init_attempt_ts = 0.0
+_last_init_error: Optional[str] = None
+
+INIT_RETRY_COOLDOWN_S = int(os.environ.get("SOT_INIT_RETRY_COOLDOWN_S", "10"))
+
+
+def init_state(force: bool = False) -> bool:
+    """
+    Initialize retrieval_state by calling rag_controller.boot().
+
+    - Uses a lock to avoid concurrent boot calls.
+    - Uses a cooldown to avoid spamming boot if it fails.
+    - Returns True if retrieval_state is ready.
+    """
+    global retrieval_state, _last_init_attempt_ts, _last_init_error
+
+    if retrieval_state is not None:
+        return True
+
+    now = time_module.time()
+    if (not force) and (now - _last_init_attempt_ts) < INIT_RETRY_COOLDOWN_S:
+        return False
+
+    with _state_lock:
+        if retrieval_state is not None:
+            return True
+
+        now = time_module.time()
+        if (not force) and (now - _last_init_attempt_ts) < INIT_RETRY_COOLDOWN_S:
+            return False
+
+        _last_init_attempt_ts = now
+        _last_init_error = None
+
+        app_logger.info("init_state: starting rag_controller.boot()...")
+
+        try:
+            retrieval_state = rag_controller.boot()
+            if retrieval_state is None:
+                _last_init_error = "boot() returned None"
+                app_logger.error(_last_init_error)
+                return False
+
+            app_logger.info("init_state: ✅ retrieval_state initialized")
+            return True
+
+        except Exception as e:
+            _last_init_error = f"boot() failed: {e}"
+            app_logger.exception(_last_init_error)
+            retrieval_state = None
+            return False
+
+
+def worker_body():
+    global app_is_shutdown
+    MODEL_NOT_READY_REPORTING_INTERVAL = 5
+    WORKER_NO_WORK_SLEEP_INTERVAL_SECS = 5
+    WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL = 20
+
+    model_not_ready_interval = MODEL_NOT_READY_REPORTING_INTERVAL - 1  # let's first report happen sooner
+    worker_no_queued_job_interval = WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL - 1
+
+    worker_ready_report = False
+    app_logger.info("App worker started")
+
+    while not app_is_shutdown:
+        if not rag_controller.has_queued_job():
+            worker_no_queued_job_interval = worker_no_queued_job_interval + 1
+            if worker_no_queued_job_interval > WORKER_NO_QUEUED_JOB_REPORTING_INTERVAL:
+                app_logger.info("Worker thread heartbeat. No job work to do.")
+                worker_no_queued_job_interval = 0
+
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
+        else:
+            worker_no_queued_job_interval = 0
+
+        app_logger.info("Background worker making health request")
+        model_ready = rag_controller.is_model_ready()
+        if not model_ready:
+            model_not_ready_interval = model_not_ready_interval + 1
+            worker_ready_report = False
+
+            if model_not_ready_interval > MODEL_NOT_READY_REPORTING_INTERVAL:
+                app_logger.info("Model still not ready. Worker body waiting.")
+                model_not_ready_interval = 0
+
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
+        else:
+            model_not_ready_interval = 0
+
+        if not worker_ready_report:
+            app_logger.info("Model is ready. Worker is active.")
+            worker_ready_report = True
+
+        queued_job = rag_controller.get_next_queued_job()
+        if not queued_job:
+            time_module.sleep(WORKER_NO_WORK_SLEEP_INTERVAL_SECS)
+            continue
+
+        try:
+            app_logger.info(f"Worker chat_with_corpus for model_type {queued_job.model_type} job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
+            answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
+
+            # clean up docs of copyrighted material
+            cleaned_docs = rag_controller.clean_rag_references(docs)
+
+            resp = rag_controller.QueuedResponse(
+                ok=True,
+                error="none",
+                detail="success",
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                prompt=queued_job.prompt,
+                reply=answer,
+                references=cleaned_docs
+            )
+            rag_controller.queue_outgoing(resp)
+
+            app_logger.info(f"Worker query job_id {queued_job.job_id} was executed succesfully. Marking done in db.")
+            db.mark_done(queued_job.job_id, answer)
+
+        except RuntimeError as e:
+            app_logger.error(f"chat_with_corpus failed in worker with runtime error: {e}")
+
+            resp = rag_controller.QueuedResponse(
+                ok=False,
+                error="Search system not initialized",
+                detail=str(e),
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                prompt=queued_job.prompt,
+                reply="none",
+                references="none"
+            )
+            rag_controller.queue_outgoing(resp)
+
+        except Exception as e:
+            app_logger.error(f"chat_with_corpus failed in worker with exception: {e}")
+
+            resp = rag_controller.QueuedResponse(
+                ok=False,
+                error="Chat failed",
+                detail=str(e),
+                job_id=queued_job.job_id,
+                user_id=queued_job.user_id,
+                prompt=queued_job.prompt,
+                reply="none",
+                references="none"
+            )
+            rag_controller.queue_outgoing(resp)
+
+        rag_controller.pop_next_queued_job()
+
+    app_logger.info("App worker shutdown")
+
+
+def init_worker():
+    worker = threading.Thread(target=worker_body)
+    worker.daemon = True
+    worker.start()
+    logging.info("Started daemon worker thread")
+
+
+def ensure_state() -> bool:
+    """Lazy initializer used by routes. Returns True if ready."""
+    return init_state(force=False)
+
+
+def is_within_service_hours(
+    now: datetime | None = None,
+    tz: ZoneInfo = EASTERN_TZ,
+) -> bool:
+    """
+    Returns True if current time is within allowed service hours.
+    """
+    if not ENABLE_TIME_GATING:
+        return True
+
+    if now is None:
+        now = datetime.now(tz)
+    else:
+        now = now.astimezone(tz)
+
+    current = now.time()
+    return START_TIME <= current < END_TIME
+
+
+def no_time_gate(fn):
+    """
+    Flask web handlers should use this as a decorator to indicate that no time gate will be used
+    """
+    fn._no_time_gate = True
+    return fn
+
+
+@app.before_request
+def time_gate():
+    """
+    Implements the logical time gate for the given business hours.
+    """
+    endpoint = app.view_functions.get(request.endpoint)
+    if getattr(endpoint, "_no_time_gate", False):
+        return
+
+    if not is_within_service_hours():
+        abort(
+            403,
+            description=f"API available {START_TIME.strftime('%I:%M %p').lstrip('0').lower()}–"
+                        f"{END_TIME.strftime('%I:%M %p').lstrip('0').lower()} EST",
+)
+
+
+# Eager init once at import time (fine under systemd + gunicorn).
+# If this fails (network down, etc.), ensure_state() will keep retrying on requests.
+init_state(force=False)
+db.init_db()
+init_worker()
+
+if ENABLE_MIN_GATING:
+    app_logger.info("Min gating feature is enabled")
+else:
+    app_logger.info("Min gating feature is disabled")
+
+app_logger.info(f"Python version: {platform.python_version()}")
+
+
+# ------------------ Shared search/chat functions ------------------
+
+def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
+    """
+    Retrieval-only search using rag_controller.search_references(state,...).
+
+    Mirrors the known-good JS:
+      - centroid routing to shard_k shards
+      - full scoring on those shards
+      - returns top_k results
+    """
+    global retrieval_state
+
+    if not ensure_state():
+        app_logger.error("Search system not initialized. Did boot() work?")
+        raise RuntimeError(_last_init_error or "Search system not initialized")
+
+    import rag_controller  # type: ignore
+
+    async def _run():
+        app_logger.info(f"Doing reference search for query: {query[:20]}")
+        return await rag_controller.search_references(  # type: ignore
+            retrieval_state,
+            query,
+            top_k=int(top_k),
+            centroid_k=int(shard_k),
+            verbose=False,
+        )
+
+    out = utils.do_async_to_sync(_run)() or {}
+    if not isinstance(out, dict):
+        return {"results": [], "num_results": 0, "query": query}
+
+    # Ensure JSON-safe
+    results = out.get("results", [])
+    if isinstance(results, list):
+        for r in results:
+            if isinstance(r, dict):
+                # cast numpy scalars if any leaked through
+                v = r.get("score_tfidf")
+                if v is not None:
+                    try:
+                        r["score_tfidf"] = float(v)
+                    except Exception:
+                        pass
+                v = r.get("score")
+                if v is not None:
+                    try:
+                        r["score"] = float(v)
+                    except Exception:
+                        pass
+
+    return out
+
+
+def ask_corpus(question: str) -> str:
+    """
+    Retrieval + LLM proxy answer using rag_controller.ask(state,...).
+    """
+    global retrieval_state
+
+    if not ensure_state():
+        raise RuntimeError(_last_init_error or "Search system not initialized")
+
+    import rag_controller  # type: ignore
+
+    async def _run():
+        return await rag_controller.ask(  # type: ignore
+            retrieval_state,
+            question,
+            verbose=False,
+        )
+
+    ans = utils.do_async_to_sync(_run)()
+    return (ans or "").strip()
+
+
+def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True, use_double_prompt = False) -> Dict[str, Any]:
+    """
+    Returns (answer: str, docs: list[dict])
+
+    Retrieval behavior:
+      - Answer is generated from the *question* (rag_controller.ask does its own retrieval)
+      - References are fetched using:
+          retrieval_text = question + " " + answer   (chat mode parity goal)
+        so the TF-IDF query vector reflects both user intent and the model’s salient terms.
+    """
+    global retrieval_state
+    if retrieval_state is None:
+        raise RuntimeError("Search system not initialized")
+
+    q = (query or "").strip()
+    if not q:
+        return ("", [])
+
+    model_adaptor = rag_controller.get_model_type(model_type)
+    if model_adaptor is None:
+        raise RuntimeError(f"Could not get valid model adapter for type: {model_type}")
+
+    async def _run():
+        # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
+        if use_rag:
+            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+        else:
+            answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+
+        answer = str(answer or "").strip()
+
+        # 2) Build retrieval text for references (query + answer)
+        if not use_rag:
+            return (answer, [])
+        retrieval_text = (q + " " + answer).strip()
+        try:
+            retrieval_text = rag_controller.clean_retrieval_text(retrieval_text)
+        except Exception:
+            # If you ever rename/move it, don't fail chat
+            pass
+
+        # Safety: keep retrieval text bounded (prevents huge TF maps / slow scoring)
+        # Tune as needed; ~800–1200 words is plenty for TF-IDF.
+        words = retrieval_text.split()
+        if len(words) > 900:
+            retrieval_text = " ".join(words[:900])
+
+        # extra logging
+        app_logger.info("chat refs retrieval_text words=%d", len(retrieval_text.split()))
+
+        # 3) Fetch reference docs using retrieval_text
+        pack = await rag_controller.search_references(
+            retrieval_state,
+            retrieval_text,
+            top_k=int(top_k),
+            verbose=False,
+            entity_source_query=q,
+            fulltext_query=retrieval_text,
+        )
+
+        docs = []
+        if isinstance(pack, dict):
+            results = pack.get("results", []) or []
+            docs = results
+        elif isinstance(pack, list):
+            docs = pack
+
+        if not isinstance(docs, list):
+            docs = []
+
+        return (answer, docs[: max(0, int(top_k) or 0)])
+
+    return utils.do_async_to_sync(_run)()
+
+
+# ------------------ Routes: UI ------------------
+
+@app.get("/")
+def index():
+    return render_template("index.html")
+
+
+@app.after_request
+def no_cache_html(resp):
+    # Prevent caching for HTML during dev
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
+
+
+# ------------------ Routes: Debug request logging (optional but useful) ------------------
+
+@app.before_request
+def debug_request():
+    # Comment out if too noisy. Helpful for seeing EXACT browser payloads.
+    raw = request.get_data(cache=True)  # cache=True keeps get_json() working
+    if request.path.startswith("/api/"):
+        app_logger.info("--- %s %s ---", request.method, request.path)
+        #app_logger.info("Content-Type: %s", request.headers.get("Content-Type"))
+        if raw:
+            app_logger.info("Body (first 2000 bytes): %s", raw[:2000])
+        app_logger.info("JSON: %s", request.get_json(silent=True))
+
+
+# ------------------ Routes: Auth ------------------
+
+@app.post("/api/unlock")
+@no_time_gate
+def api_unlock():
+    payload = request.get_json(silent=True) or {}
+    pw = (payload.get("password") or "").strip()
+    app_logger.info(f"Received unlock request, pw: {pw}")
+
+    if not pw or not ALLOWED_PASSWORDS:
+        session["unlocked"] = False
+        app_logger.info("Password not accepted. Not today.")
+        return jsonify({"ok": False, "message": "Not today"}), 403
+    else:
+        app_logger.info("Password accepted. Unlock succeeded.")
+
+    # each unlock creates a new uuid
+    # TODO: Make this robust against an attacker who farms uuids.
+    new_uuid = uuid.uuid4()
+
+    ok = any(hmac.compare_digest(pw, real) for real in ALLOWED_PASSWORDS)
+    session["unlocked"] = bool(ok)
+
+    return (jsonify({"ok": True,
+                     "message": "Access Granted",
+                     "user_id": str(new_uuid),
+                     }), 200) if ok else \
+        (jsonify({"ok": False, "message": "Not today"}), 403)
+
+
+@app.get("/api/access")
+@no_time_gate
+def api_access():
+    return jsonify({"ok": True, "unlocked": _is_unlocked()}), 200
+
+
+# ------------------ Routes: Demo ping ------------------
+
+@app.post("/api/ping")
+@no_time_gate
+def api_ping():
+    data = request.get_json(force=True)
+    return jsonify({
+        "ok": True,
+        "received": data,
+        "server_time": datetime.utcnow().isoformat() + "Z",
+        "message": "Flask received your message successfully."
     })
-  });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    const errorMsg = "send feedback back failed: " + (data?.error || "request failed");
-    pushStatusMessage(errorMsg);
-  }
-
-  return data;
-}
-
-
-function initFeedbackModal() {
-  if (els.fbClose) els.fbClose.addEventListener('click', closeFeedbackModal);
-  if (els.fbCancel) els.fbCancel.addEventListener('click', closeFeedbackModal);
-  if (els.fbSubmit) els.fbSubmit.addEventListener('click', submitFeedback);
-
-  if (els.fbOverlay) {
-    els.fbOverlay.addEventListener('click', (e) => {
-      if (e.target === els.fbOverlay) closeFeedbackModal();
-    });
-    document.addEventListener('keydown', (e) => {
-      if (els.fbOverlay.classList.contains('show') && e.key === 'Escape') closeFeedbackModal();
-    });
-  }
-}
-
-/*--------- Copy to clipboard helper  --------------*/
-
-async function copyTextToClipboard(text) {
-  const s = String(text ?? '');
-  if (!s) return false;
-
-  // Preferred (secure context: https / localhost)
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(s);
-    return true;
-  }
-
-  // Fallback
-  const ta = document.createElement('textarea');
-  ta.value = s;
-  ta.setAttribute('readonly', '');
-  ta.style.position = 'fixed';
-  ta.style.left = '-9999px';
-  ta.style.top = '0';
-  document.body.appendChild(ta);
-  ta.select();
-
-  const ok = document.execCommand('copy');
-  ta.remove();
-  return ok;
-}
-
-function bumpTooltip(btn, msg = 'Copied!', ms = 900) {
-  if (!btn?.dataset) return;
-  const prev = btn.dataset.tooltip;
-  btn.dataset.tooltip = msg;
-  setTimeout(() => (btn.dataset.tooltip = prev), ms);
-}
-
-/* =========================================================
-   10) CHAT UI RENDERING
-   ========================================================= */
-function scrollChatToBottom() {
-  if (els.chatContainer) els.chatContainer.scrollTop = els.chatContainer.scrollHeight;
-}
-
-function setBotAvatar(el) {
-  el.textContent = ""; // remove any text
-  el.innerHTML = `
-    <img src="/static/img/logo512.png" alt="" class="message-avatar-img" />
-  `;
-}
-
-function appendMessage(text, role, job_id = CFG.JOB_ID_NONE) {
-  const row = document.createElement('div');
-  row.className = 'message-row ' + (role === 'bot' ? 'bot' : 'user');
-
-  const inner = document.createElement('div');
-  inner.className = 'message-content';
-
-  const avatar = document.createElement('div');
-  avatar.className = 'message-avatar ' + (role === 'bot' ? 'bot' : 'user');
-  if (role === "bot") {
-    setBotAvatar(avatar);
-  } else {
-    avatar.textContent = "You";
-  }
-
-  const textEl = document.createElement('div');
-  textEl.className = 'message-text';
-  textEl.textContent = text;
-
-  // attach job_id
-  textEl.dataset.jobId = job_id;
-
-  inner.appendChild(avatar);
-
-  if (role === 'bot') {
-    const msgId = `bot_${++botMsgCounter}`;
-
-    const contentWrap = document.createElement('div');
-    contentWrap.style.display = 'flex';
-    contentWrap.style.alignItems = 'flex-start';
-    contentWrap.style.gap = '10px';
-    contentWrap.style.width = '100%';
-
-    textEl.style.flex = '1';
-
-    const actions = document.createElement('div');
-    actions.className = 'msg-actions';
-
-    const commentBtn = document.createElement('button');
-    commentBtn.type = 'button';
-    commentBtn.className = 'comment-btn has-tooltip';
-    commentBtn.dataset.tooltip = 'Add feedback';
-    commentBtn.setAttribute('aria-label', 'Add feedback');
-    commentBtn.innerHTML = `
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-        stroke="currentColor" stroke-width="2.2"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
-      </svg>
-    `;
-
-    commentBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openFeedbackModal({ type: 'response', id: msgId, snippet: text, job_id });
-    });
-
-    actions.appendChild(commentBtn);
-    contentWrap.appendChild(textEl);
-    contentWrap.appendChild(actions);
-    inner.appendChild(contentWrap);
-  } else {
-    inner.appendChild(textEl);
-  }
-
-  row.appendChild(inner);
-  els.messagesEl.appendChild(row);
-  scrollChatToBottom();
-}
-
-// A/B mode: side-by-side answers with selectable choice + feedback + typing + copy
-async function appendABMessage(aText, bText, job_id_a, job_id_b, meta = {}) {
-  const row = document.createElement('div');
-  row.className = 'message-row bot';
-
-  const inner = document.createElement('div');
-  inner.className = 'message-content';
-
-  const avatar = document.createElement('div');
-  avatar.className = 'message-avatar bot';
-  setBotAvatar(avatar);
-
-  const wrap = document.createElement('div');
-  wrap.className = 'ab-wrap';
-
-  function selectPanel(panel, variant) {
-    wrap.querySelectorAll('.ab-panel').forEach(p => {
-      p.classList.remove('selected');
-      const btn = p.querySelector('.ab-select-btn');
-      if (btn) btn.innerHTML = 'Select this response';
-    });
-
-    panel.classList.add('selected');
-
-    const btn = panel.querySelector('.ab-select-btn');
-    if (btn) btn.innerHTML = '✓ Selected';
-  }
-
-  function makePanel(label, variant, job_id) {
-    const panel = document.createElement('div');
-    panel.className = 'ab-panel';
-
-    const head = document.createElement('div');
-    head.className = 'ab-head';
-
-    const lbl = document.createElement('div');
-    lbl.className = 'ab-label';
-    lbl.textContent = label;
-
-    const actions = document.createElement('div');
-    actions.className = 'ab-actions';
-
-    const id = `ab_${variant}_${nowId('msg')}`;
-
-    // Track final text
-    let snippetForFeedback = `[A/B ${variant}]`;
-    let latestTextForCopy = '';
-
-    /* COPY BUTTON */
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'copy-btn comment-btn has-tooltip';
-    copyBtn.dataset.tooltip = 'Copy to clipboard';
-    copyBtn.setAttribute('aria-label', 'Copy response to clipboard');
-
-    copyBtn.innerHTML = `
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-        stroke="currentColor" stroke-width="2.2"
-        stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="9" width="13" height="13" rx="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-      </svg>
-    `;
-
-    copyBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        const textToCopy = latestTextForCopy || body.textContent || '';
-        const ok = await copyTextToClipboard(textToCopy);
-        bumpTooltip(copyBtn, ok ? 'Copied!' : 'Copy failed');
-      } catch {
-        bumpTooltip(copyBtn, 'Copy failed');
-      }
-    });
-
-    /* FEEDBACK BUTTON */
-    const commentBtn = document.createElement('button');
-    commentBtn.type = 'button';
-    commentBtn.className = 'comment-btn';
-    commentBtn.setAttribute('aria-label', 'Add feedback');
-
-    commentBtn.innerHTML = `
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-        stroke="currentColor" stroke-width="2.2"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
-      </svg>
-    `;
-
-    commentBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openFeedbackModal({ type: 'response', id, snippet: snippetForFeedback, job_id });
-    });
-
-    actions.appendChild(copyBtn);
-    actions.appendChild(commentBtn);
-
-    head.appendChild(lbl);
-    head.appendChild(actions);
-
-    /* BODY */
-    const body = document.createElement('div');
-    body.className = 'message-text';
-    body.textContent = '';
-
-    /* FOOTER */
-    const footer = document.createElement('div');
-    footer.className = 'ab-footer';
-
-    const selectBtn = document.createElement('button');
-    selectBtn.type = 'button';
-    selectBtn.className = 'ab-select-btn';
-    selectBtn.textContent = 'Select this response';
-
-    selectBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectPanel(panel, variant);
-    });
-
-    footer.appendChild(selectBtn);
-
-    panel.appendChild(head);
-    panel.appendChild(body);
-    panel.appendChild(footer);
-
-    panel.addEventListener('click', () => selectPanel(panel, variant));
-
-    return {
-      panel,
-      body,
-      setSnippet: (finalText) => {
-        const s = String(finalText ?? '');
-        snippetForFeedback = `[A/B ${variant}] ${s}`;
-        latestTextForCopy = s;
-      }
-    };
-  }
-
-  const panelA = makePanel(meta.labelA || 'Response A', 'A', job_id_a);
-  const panelB = makePanel(meta.labelB || 'Response B', 'B', job_id_b);
-
-  wrap.appendChild(panelA.panel);
-  wrap.appendChild(panelB.panel);
-
-  inner.appendChild(avatar);
-  inner.appendChild(wrap);
-  row.appendChild(inner);
-
-  els.messagesEl.appendChild(row);
-  scrollChatToBottom();
-
-  /* Typing animation */
-  const aFinal = String(aText ?? '');
-  const bFinal = String(bText ?? '');
-
-  await typeIntoElement(panelA.body, aFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
-  panelA.setSnippet(aFinal);
-
-  await typeIntoElement(panelB.body, bFinal, { cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 650});
-  panelB.setSnippet(bFinal);
-}
-
-
-function appendBotTypingMessage(initialText = '', job_id = CFG.JOB_ID_NONE) {
-  const row = document.createElement('div');
-  row.className = 'message-row bot';
-
-  const inner = document.createElement('div');
-  inner.className = 'message-content';
-
-  const avatar = document.createElement('div');
-  avatar.className = 'message-avatar bot';
-  setBotAvatar(avatar);
-
-  const msgId = `bot_${++botMsgCounter}`;
-
-  const contentWrap = document.createElement('div');
-  contentWrap.style.display = 'flex';
-  contentWrap.style.alignItems = 'flex-start';
-  contentWrap.style.gap = '10px';
-  contentWrap.style.width = '100%';
-
-  const textEl = document.createElement('div');
-  textEl.className = 'message-text';
-  textEl.style.flex = '1';
-  textEl.textContent = initialText;
-
-  // attach job_id
-  textEl.dataset.jobId = job_id;
-
-  const actions = document.createElement('div');
-  actions.className = 'msg-actions';
-
-  // IMPORTANT: snippet should reflect FINAL text (not whatever it was initially)
-  let snippetForFeedback = initialText;
-
-  // Also keep the latest full text for copying
-  let latestTextForCopy = initialText;
-
-  // --- COPY button (new) ---
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  // reuse your existing button styling + tooltip behavior
-  copyBtn.className = 'copy-btn comment-btn has-tooltip';
-  copyBtn.dataset.tooltip = 'Copy to clipboard';
-  copyBtn.setAttribute('aria-label', 'Copy response to clipboard');
-  copyBtn.innerHTML = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2"></rect>
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-    </svg>
-  `;
-
-  copyBtn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      const ok = await copyTextToClipboard(latestTextForCopy || textEl.textContent || '');
-      if (ok) bumpTooltip(copyBtn, 'Copied!');
-      else bumpTooltip(copyBtn, 'Copy failed');
-    } catch {
-      bumpTooltip(copyBtn, 'Copy failed');
-    }
-  });
-
-  // --- FEEDBACK button (existing) ---
-  const commentBtn = document.createElement('button');
-  commentBtn.type = 'button';
-  commentBtn.className = 'comment-btn has-tooltip';
-  commentBtn.dataset.tooltip = 'Add feedback';
-  commentBtn.setAttribute('aria-label', 'Add feedback');
-  commentBtn.innerHTML = `
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-      stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
-    </svg>
-  `;
-  commentBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openFeedbackModal({ type: 'response', id: msgId, snippet: snippetForFeedback, job_id });
-  });
-
-  // Put copy immediately LEFT of feedback
-  actions.appendChild(copyBtn);
-  actions.appendChild(commentBtn);
-  contentWrap.appendChild(textEl);
-  contentWrap.appendChild(actions);
-
-  inner.appendChild(avatar);
-  inner.appendChild(contentWrap);
-  row.appendChild(inner);
-
-  els.messagesEl.appendChild(row);
-  scrollChatToBottom();
-
-  return {
-    textEl,
-    setSnippet: (finalText) => {
-      const s = String(finalText ?? '');
-      snippetForFeedback = s;
-      latestTextForCopy = s;
-    },
-    msgId
-  };
-}
-
-
-/* =========================================================
-   11) REFERENCES
-   ========================================================= */
-function linkifyPlainUrls(htmlStr) {
-  // Turn bare URLs into <a> links, but avoid touching existing tags too much.
-  // This is intentionally conservative: it won't linkify inside existing attributes.
-  const urlRe = /(^|[\s>])(https?:\/\/[^\s<]+)/g;
-  return String(htmlStr || '').replace(urlRe, (m, prefix, url) => {
-    return `${prefix}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-}
-
-function toHttpsUrl(raw) {
-  let s = String(raw || '').trim();
-  if (!s) return '';
-
-  // If it's already a valid absolute URL, keep it
-  if (/^https?:\/\//i.test(s)) return s;
-
-  // Common escape sequences from JSON or stored strings
-  s = s.replace(/\\\//g, '/');  // turns https:\/\/ into https://
-
-  // Protocol-relative URLs
-  if (s.startsWith('//')) return 'https:' + s;
-
-  // "www.example.com/..." or "example.com/..."
-  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(s)) return 'https://' + s;
-
-  return '';
-}
-
-function getRefLink(ref) {
-  // Prefer new field names first
-  const su = String(ref?.source_url || "").trim();
-  if (su) return su;
-
-  // Back-compat
-  const u = String(ref?.url || "").trim();
-  if (u) return u;
-
-  const s = String(ref?.source || "").trim();
-  if (looksLikeUrl(s)) return s;
-
-  return "";
-}
-
-
-function sanitizeBasicHtml(htmlStr) {
-  // Minimal sanitizer (NOT bulletproof). Best practice is DOMPurify.
-  // Removes scripts/styles/iframes and strips on* handlers.
-  const tpl = document.createElement('template');
-  tpl.innerHTML = String(htmlStr || '');
-
-  // Remove dangerous elements
-  tpl.content.querySelectorAll('script, style, iframe, object, embed, link, meta').forEach(n => n.remove());
-
-  // Strip inline event handlers and javascript: URLs
-  tpl.content.querySelectorAll('*').forEach(el => {
-    [...el.attributes].forEach(attr => {
-      const name = attr.name.toLowerCase();
-      const val = String(attr.value || '').trim().toLowerCase();
-      if (name.startsWith('on')) el.removeAttribute(attr.name);
-      if ((name === 'href' || name === 'src') && val.startsWith('javascript:')) el.removeAttribute(attr.name);
-    });
-
-    // Force safe link behavior
-    if (el.tagName === 'A') {
-      el.setAttribute('target', '_blank');
-      el.setAttribute('rel', 'noopener noreferrer');
-    }
-  });
-
-  return tpl.innerHTML;
-}
-
-function truncateElementToWords(containerEl, maxWords) {
-  // Walk text nodes and trim after maxWords, preserving HTML structure.
-  const walker = document.createTreeWalker(containerEl, NodeFilter.SHOW_TEXT);
-  let wordsUsed = 0;
-  let node;
-
-  const nodesToClearAfter = [];
-  let trimming = false;
-
-  while ((node = walker.nextNode())) {
-    if (trimming) {
-      nodesToClearAfter.push(node);
-      continue;
-    }
-
-    const text = node.nodeValue || '';
-    const parts = text.split(/\s+/).filter(Boolean);
-
-    if (parts.length === 0) continue;
-
-    if (wordsUsed + parts.length <= maxWords) {
-      wordsUsed += parts.length;
-      continue;
-    }
-
-    // Need to cut inside this node
-    const remaining = maxWords - wordsUsed;
-    const kept = parts.slice(0, Math.max(0, remaining)).join(' ');
-    node.nodeValue = kept + '…';
-    trimming = true;
-  }
-
-  // Remove all remaining text nodes content (and any elements that become empty)
-  nodesToClearAfter.forEach(n => { n.nodeValue = ''; });
-
-  // Cleanup: remove now-empty elements to avoid lots of blank tags
-  containerEl.querySelectorAll('*').forEach(el => {
-    if (!el.textContent.trim() && !el.querySelector('img, br, hr')) {
-      el.remove();
-    }
-  });
-}
-   
-   
-function setReferences(refs) {
-  const list = Array.isArray(refs) ? refs.slice(0, CFG.MAX_REFS) : [];
-  els.referencesContainer.innerHTML = '';
-
-  if (!list.length) {
-    els.referencesCount.textContent = '0 items';
-    els.referencesEmpty.style.display = 'block';
-    return;
-  }
-
-  els.referencesEmpty.style.display = 'none';
-  els.referencesCount.textContent = list.length + ' item' + (list.length === 1 ? '' : 's');
-
-  list.forEach((ref, idx) => {
-	if (idx === 0) {
-	  console.log("REF KEYS:", Object.keys(ref || {}));
-	  console.log("REF FULL:", ref);
-	}	  
-    const card = document.createElement('article');
-    card.className = 'ref-card';
-
-    const refId = `ref_${idx}_${Math.random().toString(16).slice(2)}`;
-
-    const header = document.createElement('div');
-    header.className = 'ref-header';
-
-    // --- NEW: left + right layout inside header ---
-    const left = document.createElement('div');
-    left.className = 'ref-left';
-
-    const right = document.createElement('div');
-    right.className = 'ref-right';
-
-    // "Found on {label}" link (top-left)
-    const foundLabel =
-      String(ref?.found_on || '').trim() ||
-      String(ref?.publisher || '').trim() ||
-      'Source';
-
-	// Use source URL (prefer source_url, but fall back to source if it's blank)
-	const hrefRaw = (
-	  String(ref?.source_url || '').trim() ||
-	  String(ref?.source || '').trim()
-	);
-	const href = toHttpsUrl(hrefRaw);
-    // debugging 
-	if (idx === 0) console.log("source_url=", ref?.source_url, "source=", ref?.source);
-	console.log('found-on hrefRaw=', hrefRaw, 'href=', href);
-
-    const foundEl = document.createElement(href ? 'a' : 'span');
-    foundEl.className = 'ref-foundon';
-    foundEl.textContent = `Found on ${foundLabel}`;
-
-    if (href) {
-      foundEl.href = href;
-      foundEl.target = '_blank';
-      foundEl.rel = 'noopener noreferrer';
-      foundEl.addEventListener('click', (e) => e.stopPropagation());
-    }
-
-    left.appendChild(foundEl);
-	console.log('foundEl tag=', href ? 'a' : 'span', 'hrefRaw=', hrefRaw, 'href=', href);
-
-    // feedback button stays on the right
-    const cbtn = document.createElement('button');
-    cbtn.type = 'button';
-    cbtn.className = 'comment-btn';
-    cbtn.dataset.tooltip = 'Add feedback';
-    cbtn.setAttribute('aria-label', 'Add feedback');
-    cbtn.innerHTML = `
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
-        stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
-      </svg>
-    `;
-    cbtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const title = String(ref?.title || '').trim();
-      const snip = String(ref?.snippet || ref?.text || '').trim();
-      openFeedbackModal({
-        type: 'reference',
-        id: refId,
-        snippet: (title ? title + ' — ' : '') + snip,
-        job_id: "none"
-      });
-    });
-
-    right.appendChild(cbtn);
-
-    header.appendChild(left);
-    header.appendChild(right);
-
-    // Title line
-    const titleText = String(ref?.title || "").trim();
-    if (titleText) {
-      const t = document.createElement('div');
-      t.className = 'ref-title';
-      t.textContent = titleText;
-      header.appendChild(t);
-    }
-
-    // Optional meta line (date only; found_on already shown)
-    const metaBits = [];
-    const date = String(ref?.date || "").trim();
-    if (date) metaBits.push(date);
-
-    if (metaBits.length) {
-      const meta = document.createElement('div');
-      meta.className = 'ref-meta';
-      meta.textContent = metaBits.join(' • ');
-      header.appendChild(meta);
-    }
-
-    const snippetEl = document.createElement('div');
-    snippetEl.className = 'ref-snippet';
-
-    // Prefer HTML snippet if server provides it, else use plain snippet/text
-
-	// 1) Prefer plain text that still contains markdown
-	let rawText = String(ref?.snippet ?? ref?.text ?? ref?.content ?? '').trim();
-
-	// 2) If we don't have plain text, fall back to server HTML (already escaped / linkified)
-	let rawHtml = String(ref?.snippet_html ?? '').trim();
-
-	if (rawText) {
-	  // IMPORTANT: do NOT decode &lt; &gt; here; keep it text.
-	  // Only clean RAG artifacts / weird tokens.
-	  rawText = cleanRagArtifacts(rawText);
-
-	  // Markdown -> HTML (your mini renderer escapes HTML)
-	  const mdHtml = renderMiniMarkdown(rawText);
-
-	  // Sanitize the result
-	  snippetEl.innerHTML = sanitizeBasicHtml(mdHtml);
-	} else if (rawHtml) {
-	  // If server HTML contains entities like &#x27; you can decode *safely*,
-	  // but do NOT decode into real tags that weren't intended.
-	  // In most cases: don't decode; just sanitize.
-	  rawHtml = cleanRagArtifacts(rawHtml);
-
-	  snippetEl.innerHTML = sanitizeBasicHtml(rawHtml);
-	} else {
-	  snippetEl.textContent = '';
-	}
-
-    truncateElementToWords(snippetEl, 600);
-
-    card.appendChild(header);
-    card.appendChild(snippetEl);
-    els.referencesContainer.appendChild(card);
-  });
-}
-
-
-/* =========================================================
-   12) CONVERSATION HISTORY (client-side)
-   ========================================================= */
-function pushTurn(userText, assistantText) {
-  convoTurns.push({ user: userText, assistant: assistantText });
-  if (convoTurns.length > CFG.MAX_CONVO_TURNS) convoTurns.shift();
-}
-
-function getContextTurns(n) {
-  const turns = clampInt(n, 0, CFG.MAX_CONTEXT_TURNS, CFG.DEFAULT_HISTORY_TURNS);
-  return convoTurns.slice(-turns);
-}
-
-/* =========================================================
-   13) SAVED CONVERSATIONS (localStorage)
-   ========================================================= */
-function loadSavedConversations() {
-  const raw = localStorage.getItem(CFG.LS_SAVED_CONVOS);
-  const parsed = safeJsonParse(raw || '[]', []);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function saveSavedConversations(list) {
-  try { localStorage.setItem(CFG.LS_SAVED_CONVOS, JSON.stringify(list)); } catch (_) {}
-}
-
-function makeConversationTitle(turns) {
-  const first = turns?.find(t => t?.user)?.user || 'Conversation';
-  const t = String(first).trim().replace(/\s+/g, ' ');
-  return t.length > 42 ? t.slice(0, 42) + '…' : t;
-}
-
-function makeConversationPreview(turns) {
-  if (!Array.isArray(turns) || turns.length === 0) return '';
-  const last = turns[turns.length - 1];
-  const txt = String(last.assistant || last.user || '').trim().replace(/\s+/g, ' ');
-  return txt.length > 60 ? txt.slice(0, 60) + '…' : txt;
-}
-
-function renderRecentList() {
-  const saved = loadSavedConversations();
-  els.recentList.innerHTML = '';
-
-  if (!saved.length) {
-    const el = document.createElement('div');
-    el.className = 'recent-item muted';
-    el.textContent = 'No saved conversations yet.';
-    els.recentList.appendChild(el);
-    return;
-  }
-
-  saved.slice()
-    .sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))
-    .forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'recent-preview';
-
-      const content = document.createElement('div');
-      content.className = 'recent-preview-content';
-
-      const title = document.createElement('div');
-      title.className = 'recent-preview-title';
-      title.textContent = item.title || 'Conversation';
-
-      const sub = document.createElement('div');
-      sub.className = 'recent-preview-sub';
-      sub.textContent = item.preview || '';
-
-      content.appendChild(title);
-      content.appendChild(sub);
-
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'recent-delete has-tooltip';
-      del.dataset.tooltip = 'Delete conversation';
-      del.setAttribute('aria-label', 'Delete conversation');
-      del.textContent = '×';
-
-      del.addEventListener('click', (e) => {
-        e.stopPropagation();
-        deleteConversationById(item.id);
-      });
-
-      row.addEventListener('click', () => loadConversationById(item.id));
-
-      row.appendChild(content);
-      row.appendChild(del);
-
-      els.recentList.appendChild(row);
-    });
-}
-
-function saveCurrentConversation() {
-  if (!Array.isArray(convoTurns) || convoTurns.length === 0) {
-    pushStatusMessage('Nothing to save yet.');
-    return;
-  }
-
-  const saved = loadSavedConversations();
-  const item = {
-    id: nowId('convo'),
-    savedAt: Date.now(),
-    title: makeConversationTitle(convoTurns),
-    preview: makeConversationPreview(convoTurns),
-    turns: convoTurns.slice()
-  };
-
-  saved.unshift(item);
-  if (saved.length > CFG.MAX_SAVED_CONVOS) saved.length = CFG.MAX_SAVED_CONVOS;
-
-  saveSavedConversations(saved);
-  renderRecentList();
-  pushStatusMessage(`Saved conversation: "${item.title}"`);
-}
-
-function loadConversationById(id) {
-  const saved = loadSavedConversations();
-  const item = saved.find(x => x.id === id);
-  if (!item) return;
-
-  els.messagesEl.innerHTML = '';
-  convoTurns.length = 0;
-  if (els.welcomeMessage) els.welcomeMessage.style.display = 'none';
-
-  (item.turns || []).forEach((t) => {
-    if (t.user) appendMessage(t.user, 'user');
-    if (t.assistant) appendMessage(t.assistant, 'bot');
-    convoTurns.push({ user: t.user || '', assistant: t.assistant || '' });
-  });
-
-  pushStatusMessage(`Loaded conversation: "${item.title}"`);
-}
-
-async function deleteConversationById(id) {
-  const ok = await modalConfirm({
-    title: 'Delete saved conversation?',
-    message: 'This will remove the saved conversation from this browser. This cannot be undone.',
-    confirmText: 'Delete',
-    cancelText: 'Cancel',
-    danger: true
-  });
-  if (!ok) return;
-
-  const saved = loadSavedConversations().filter(c => c.id !== id);
-  saveSavedConversations(saved);
-  renderRecentList();
-  pushStatusMessage('Conversation deleted.');
-}
-
-/* =========================================================
-   14) INPUT AREA
-   ========================================================= */
-function autoResizeTextarea() {
-  if (!els.chatInput) return;
-  els.chatInput.style.height = 'auto';
-  els.chatInput.style.height = Math.min(els.chatInput.scrollHeight, CFG.TEXTAREA_MAX_HEIGHT) + 'px';
-  els.chatInput.style.overflowY = (els.chatInput.scrollHeight > CFG.TEXTAREA_MAX_HEIGHT) ? 'auto' : 'hidden';
-}
-
-async function clearCurrentChat() {
-  const hasMessages = (convoTurns && convoTurns.length) || (els.messagesEl && els.messagesEl.children.length);
-  if (!hasMessages) {
-    await modalAlert({ title: 'Nothing to clear', message: 'There are no messages in the current chat yet.' });
-    return;
-  }
-
-  const ok = await modalConfirm({
-    title: 'Clear current chat?',
-    message: 'This clears the current chat on this page. Saved chats are not affected.',
-    confirmText: 'Clear',
-    cancelText: 'Cancel',
-    danger: true
-  });
-  if (!ok) return;
-
-  els.messagesEl.innerHTML = '';
-  convoTurns.length = 0;
-  if (els.welcomeMessage) els.welcomeMessage.style.display = '';
-  setReferences([]);
-  pushStatusMessage('Current chat cleared.');
-}
-
-/* =========================================================
-   15) FLASK API HELPERS (session cookie enabled)
-   ========================================================= */
-async function apiPost(url, payload) {
-  // TODO: Remove for prod
-  console.log("API POST to url: " + url)
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin', // required for Flask session cookie
-    body: JSON.stringify(payload || {})
-  });
-
-  let data = {};
-  try { data = await res.json(); } catch (_) {}
-
-  //console.log("GOT res")
-
-  if (!res.ok) {
-    const msg = data?.message || data?.error || `Request failed (${res.status})`;
-    const err = new Error(msg);
-    err.status = res.status;
-    err.data = data;
-
-    // add job id to error for processing if present
-    err.job_id = data?.job_id ?? null;
-
-    throw err;
-  }
-  return data;
-}
-
-async function apiGet(url) {
-  const res = await fetch(url, { method: 'GET', credentials: 'same-origin' });
-  let data = {};
-  try { data = await res.json(); } catch (_) {}
-  if (!res.ok) throw new Error(data?.message || `Request failed (${res.status})`);
-  return data;
-}
-
-async function apiSearch(payload) {
-  const res = await fetch('/api/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify(payload)
-  });
-
-  const text = await res.text();
-
-  console.log("[/api/search] status:", res.status);
-  console.log("[/api/search] raw body:", text.slice(0, 2000));
-
-  let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch (_) {}
-
-  console.log("[/api/search] parsed keys:", Object.keys(data || {}));
-  console.log("[/api/search] parsed data:", data);
-
-  // ALSO treat ok:false as an error even if HTTP 200
-  if (!res.ok || data.ok === false) {
-    const msg = data.error || data.message || text || `HTTP ${res.status}`;
-    throw new Error(`apiSearch failed: ${res.status} — ${msg}`);
-  }
-
-  return data;
-}
-
-async function apiChat(payload) {
-  return apiPost(CFG.API.CHAT, payload);
-}
-
-async function apiAB(payload) {
-  return apiPost(CFG.API.AB, payload);
-}
-
-async function apiUnlock(password) {
-  return apiPost(CFG.API.UNLOCK, { password });
-}
-
-async function apiAccess() {
-  return apiGet(CFG.API.ACCESS);
-}
-
-async function fetchJsonWithTimeout(url, opts = {}, timeoutMs = 4000) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(url, { ...opts, signal: controller.signal });
-    let data = {};
-    try { data = await res.json(); } catch (_) {}
-    if (!res.ok) {
-      throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
-    }
-    return data;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function apiFeedback() {
-  return apiGet(CFG.API.FEEDBACK);
-}
-
-async function apiStatus({ health = false } = {}) {
-  return fetchJsonWithTimeout(CFG.API.STATUS, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({
-        health: String(health)
-    })
-  }, 4000);
-} 
-
-async function apiQueue() {
-  return apiPost(CFG.API.QUEUE, {
-    user_id: getUserId(),
-  });
-}
-
-/* =========================================================
-   16) CHAT HANDLING (submit + render)
-   ========================================================= */
-function getUserId() {
-  const KEY = 'sot_user_id';
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    // Stable per-browser ID (good enough for dev + non-auth chat)
-    id = (crypto?.randomUUID ? crypto.randomUUID() : `u_${Date.now()}_${Math.random().toString(16).slice(2)}`);
-    localStorage.setItem(KEY, id);
-  }
-  return id;
-}   
-   
-async function handleChatSubmit(e) {
-  e.preventDefault();
-  const text = (els.chatInput.value || '').trim();
-  if (!text) return;
-
-  const userId = getUserId();
-
-  if (els.welcomeMessage) els.welcomeMessage.style.display = 'none';
-
-  appendMessage(text, 'user');
-  els.chatInput.value = '';
-  autoResizeTextarea();
-
-  const contextTurns = getContextTurns(toolState.historyTurns);
-
-  // Define model type
-  const model_type = toolState.modelType || "hf";
-
-  // Base payload (chat / ab). Search uses query instead of message.
-  const payload = {
-    user_id: userId,
-    message: text,
-    mode: toolState.mode,
-    history_turns: toolState.historyTurns,
-    context: contextTurns,
-	use_rag: !!toolState.useRag,
-	model_type
-  };
-
-  // Start “busy” immediately so the user gets feedback right away
-  const initialLabel =
-    toolState.mode === 'search' ? 'Searching' :
-    toolState.mode === 'ab' ? 'Running A/B' :
-    'Thinking';
-
-  const endStatus = beginStatus(initialLabel);
-
-  try {
-    // Enforce gate client-side (server enforces too)
-    if (!isUnlocked && (toolState.mode === 'chat' || toolState.mode === 'ab')) {
-      toolState.mode = 'search';
-      renderToolState();
-      saveToolState();
-      setNoteMessage('Searching', { busy: true });
-    }
-
-    if (toolState.mode === 'search') {
-      const searchPayload = {
-        user_id: userId,
-        query: text,
-        max_n: CFG.MAX_REFS,
-        mode: 'search',
-        history_turns: toolState.historyTurns,
-        context: contextTurns,
-		use_rag: !!toolState.useRag
-      };
-
-      console.log('[Search → Flask] payload:', searchPayload);
-
-      // Use an inner try/finally so we *always* end busy even though we return early
-      try {
-        setNoteMessage('Searching corpus…', { busy: true });
-
-        const data = await apiSearch(searchPayload);
-        console.log('[Search ← Flask] response:', data);
-
-        setNoteMessage('Rendering results…', { busy: true });
-
-        const bot =
-          data.message ||
-          `Found ${data.num_results ?? (data.results?.length ?? 0)} items. Results below`;
-
-        appendMessage(bot, 'bot');
-        pushTurn(text, bot);
-
-		const refs = (Array.isArray(data.results) ? data.results : [])
-		  .slice(0, CFG.MAX_REFS)
-		  .map((r) => ({
-			title: r.title || r.source_title || r.filename || 'Reference',
-
-			// New preferred fields:
-			source_url: r.source_url || r.url || r.link || "",
-			publisher: r.publisher || r.publication || r.source || "Corpus",
-			found_on: r.found_on || "",
-
-			// Snippet: prefer html if provided, else plain
-			snippet_html: r.snippet_html || "",
-			snippet: r.snippet || r.text || r.excerpt || "",
-
-			// Optional extras (harmless if absent)
-			date: r.date || r.Date || "",
-			dataset: r.dataset || ""
-		  }));
-
-        setReferences(refs);
-      } catch (err) {
-        console.error('[Search] apiSearch failed:', err);
-        appendMessage('Search request failed (dev). Check server logs.', 'bot');
-        pushStatusMessage(String(err?.message || err));
-        setReferences([]);
-      } finally {
-        endStatus(); // IMPORTANT: ends spinner + restores default note
-      }
-
-      return;
-    }
-
-    if (toolState.mode === 'ab') {
-      setNoteMessage('Generating two responses…', { busy: true });
-
-      const data = await apiAB(payload);
-
-      setNoteMessage('Rendering A/B…', { busy: true });
-
-      appendABMessage(data.a || '', data.b || '', data.job_id_a || CFG.JOB_ID_NONE,
-        data.job_id_b || CFG.JOB_ID_NONE,{
-        labelA: data.labelA,
-        labelB: data.labelB
-      });
-
-      pushTurn(text, `Response A:\n${data.a || ''}\n\nResponse B:\n${data.b || ''}`);
-      setReferences(Array.isArray(data.references) ? data.references : []);
-      return;
-    }
-
-    // chat
-    setNoteMessage('Generating response…', { busy: true });
-
-    const data = await apiChat(payload);
-    const reply = data.reply || data.message || data.status || '';
-    const job_id = data.job_id || CFG.JOB_ID_NONE;
-
-    setNoteMessage('Rendering response…', { busy: true });
-
-	const finalReply = reply || '(no reply)';
-
-	// Create placeholder message immediately
-	const botUI = appendBotTypingMessage('', job_id);
-
-	// Type into the existing message-text element
-	await typeIntoElement(botUI.textEl, finalReply, {
-	  cps: 60,
-	  chunkMin: 1,
-	  chunkMax: 4,
-	  maxTyped: 800,
-	});
-
-	// Ensure feedback uses the final text
-	botUI.setSnippet(finalReply);
-
-	pushTurn(text, finalReply);
-
-    setReferences(Array.isArray(data.references) ? data.references : []);
-
-  } catch (err) {
-    // process queued up message
-    //if ((err.status) == 503 && err.error.includes('queued')) {
-    if (err.status == 503) {
-        const job_id = err.job_id ?? null;
-        if (job_id) {
-            console.log("Chat message was queued with job_id: " + job_id)
-        } else {
-            console.log("Chat queued message had no job_id was present. could not process message.")
-        }
-
-        appendMessage(NOT_READY_MSG, 'bot', job_id);
-        pushStatusMessage(NOT_READY_MSG);
-        setEndpointStatus('starting');
-        return;
-    }
-
-    if (err?.status === 403) {
-      // Access revoked / expired
-      setModeAccess(false);
-      toolState.mode = 'search';
-      renderToolState();
-      saveToolState();
-      appendMessage('Not today. Search mode only.', 'bot', CFG.JOB_ID_NONE);
-      pushTurn(text, 'Not today. Search mode only.');
-      return;
-    }
-
-    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
-    pushStatusMessage(String(err?.message || err));
-    setReferences([]);
-
-  } finally {
-    // Covers chat + ab + outer errors.
-    // Search branch returns early, but it already calls endStatus() in its own finally.
-    endStatus();
-  }
-}
-
-function updateMessageByJobId(job_id, newText) {
-  const el = document.querySelector(
-    `.message-text[data-job-id="${job_id}"]`
-  );
-  if (!el) return;
-  el.textContent = newText;
-  pushStatusMessage(" ");
-}
-
-function processQueuedMsg(job_id, update_text) {
-    console.log("queued_msg: " + job_id)
-    updateMessageByJobId(job_id, update_text)
-}
-
-
-/* =========================================================
-   17) ABOUT MODAL and PING TEST
-   ========================================================= */
-function initAboutModal() {
-  const btn = document.getElementById("about-btn");
-  const overlay = document.getElementById("about-overlay");
-  const closeBtn = document.getElementById("about-close");
-
-  if (!btn || !overlay || !closeBtn) return;
-
-  function open() {
-    overlay.classList.add("show");
-    overlay.setAttribute("aria-hidden", "false");
-  }
-
-  function close() {
-    overlay.classList.remove("show");
-    overlay.setAttribute("aria-hidden", "true");
-  }
-
-  btn.addEventListener("click", open);
-  closeBtn.addEventListener("click", close);
-
-  // click outside
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) close();
-  });
-
-  // escape key
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && overlay.classList.contains("show")) close();
-  });
-}
-
-function initPingTest() {
-  const btn = document.getElementById("ping-btn");
-  const output = document.getElementById("ping-result");
-  if (!btn || !output) return;
-
-  btn.addEventListener("click", async () => {
-    output.textContent = "Sending request...";
-
-    try {
-      const data = await apiPost(CFG.API.PING, {
-        from: "browser",
-        test: "JS → Flask → JS"
-      });
-      output.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      output.textContent = "Error: " + (err?.message || String(err));
-    }
-  });
-}
-
-/* =========================================================
-   18) RANGE FILL + AUTOSIZE (helpers)
-   ========================================================= */
-function initRangeFill() {
-  const r = document.getElementById('history-slider');
-  if (!r) return;
-
-  function setFill(){
-    const min = Number(r.min || 0);
-    const max = Number(r.max || 100);
-    const val = Number(r.value || 0);
-    const pct = ((val - min) / (max - min)) * 100;
-    r.style.setProperty('--fill', pct + '%');
-  }
-
-  r.addEventListener('input', setFill);
-  setFill();
-}
-
-function initAutosizeTextarea() {
-  const ta = document.getElementById('chat-input');
-  if (!ta) return;
-  ta.addEventListener('input', autoResizeTextarea);
-  window.addEventListener('resize', autoResizeTextarea);
-  autoResizeTextarea();
-}
-
-/* =========================================================
-   19) LOCK UI
-   ========================================================= */ 
-
-function closeLockModal() {
-  const lockModal = document.getElementById("lock-modal");
-  const lockPass  = document.getElementById("lock-pass");
-  const lockMsg   = document.getElementById("lock-msg");
-
-  if (!lockModal) return;
-
-  lockModal.classList.remove("open");
-  lockModal.setAttribute("aria-hidden", "true");
-
-  if (lockMsg) lockMsg.textContent = "";
-  if (lockPass) lockPass.value = "";
-}
-   
-function setModeAccess(unlocked) {
-  isUnlocked = !!unlocked;
-
-  const modeSearch = document.getElementById("mode-search");
-  const modeChat = document.getElementById("mode-chat");
-  const modeAb = document.getElementById("mode-ab");
-  const lockBtnEl = document.getElementById("lock-btn");
-
-  if (modeChat) modeChat.disabled = !isUnlocked;
-  if (modeAb) modeAb.disabled = !isUnlocked;
-
-  if (!isUnlocked) toolState.mode = "search";
-  if (!isUnlocked && modeSearch) modeSearch.checked = true;
-
-  if (lockBtnEl) {
-    lockBtnEl.classList.toggle("unlocked", isUnlocked);
-    lockBtnEl.disabled = isUnlocked;
-    lockBtnEl.setAttribute(
-      "aria-label",
-      isUnlocked ? "Access granted. Connecting..." : "Restricted access"
-    );
-  }
-
-  renderToolState();
-  saveToolState();
-
-  // close after any re-render, using global re-querying closer
-  if (isUnlocked) closeLockModal();
-}
-
-function initLockUI() {
-  const lockBtn = document.getElementById("lock-btn");
-  const lockModal = document.getElementById("lock-modal");
-  const lockClose = document.getElementById("lock-close");
-  const lockEnter = document.getElementById("lock-enter");
-  const lockPass = document.getElementById("lock-pass");
-  const lockMsg = document.getElementById("lock-msg");
-
-  if (!lockBtn || !lockModal || !lockClose || !lockEnter || !lockPass || !lockMsg) return;
-
-  function openLockModal() {
-    lockModal.classList.add("open");
-    lockModal.setAttribute("aria-hidden", "false");
-    lockMsg.textContent = "";
-    lockPass.value = "";
-    setTimeout(() => lockPass.focus(), 0);
-  }
-
-  async function tryUnlock() {
-    const pw = (lockPass.value || "").trim();
-    if (!pw) return;
-
-    lockEnter.disabled = true;
-    lockPass.disabled = true;
-    lockMsg.textContent = "Checking…";
-
-    try {
-      const data = await apiUnlock(pw);
-      const unlocked = !!(data && (data.unlocked === true || data.ok === true));
-
-	  if (unlocked) {
-	    setModeAccess(true);
-	  } else {
-	    setModeAccess(false);
-	    lockMsg.textContent = (data && (data.message || data.error)) || "Incorrect password";
-	  }
-    } catch (err) {
-      setModeAccess(false);
-      lockMsg.textContent = err?.message || "Not today";
-    } finally {
-      lockEnter.disabled = false;
-      lockPass.disabled = false;
-    }
-  }
-
-  lockBtn.addEventListener("click", openLockModal);
-  lockClose.addEventListener("click", closeLockModal);
-  lockModal.addEventListener("click", (e) => { if (e.target === lockModal) closeLockModal(); });
-  lockEnter.addEventListener("click", tryUnlock);
-
-  lockPass.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();      // prevents newline / implicit form submit
-      tryUnlock();
-    }
-    if (e.key === "Escape") closeLockModal();
-  });
-}
-
-
-/* =========================================================
-   20) STATUS + QUEUE POLLING
-   ========================================================= */
-   
-// Deduplicate status messages so we don't spam the UI every poll
-function pushStatusMessageDedup(msg, key = "generic") {
-  const map = pushStatusMessageDedup._map || (pushStatusMessageDedup._map = new Map());
-  if (map.get(key) === msg) return;
-  map.set(key, msg);
-  pushStatusMessage(msg);
-}
-
-let lastHealthCheckAt = 0;
-
-async function refreshStatusOnce(sendHealth = false) {
-  try {
-    const now = Date.now();
-    const doHealth = sendHealth || (now - lastHealthCheckAt) > 60_000; // every 60s
-
-    // let queue refresh handle health checking
-    //console.log("refreshStatusOnce: doing health? " + doHealth)
-    const data = await apiStatus({health: doHealth})
-
-    if (typeof data?.unlocked === 'boolean') setModeAccess(data.unlocked);
-
-    const indexReady = data?.retrieval_state_ready === true;
-    const hasModelReady = "model_ready" in data;
-    const modelReady = data?.model_ready === true;
-
-    if (doHealth && hasModelReady) lastHealthCheckAt = now;
-    //console.log("refreshStatusOnce " + sendHealth + ", hasModelReady " + hasModelReady + ", modelReady " + modelReady)
-
-	if (doHealth && typeof data?.model_ready === "boolean") {
-	  pushStatusMessageDedup(
-		`Model health: ${data.model_ready ? "OK" : "not ready"}`,
-		"model"
-	  );
-	}
-
-    // endpoint status only updated when there a health status is done
-    if (indexReady && hasModelReady && modelReady) {
-      setEndpointStatus('ready');
-      els.endpointLabel.textContent = 'Endpoint Ready';
-      els.endpointChip.textContent = 'healthy';
-    } else if (indexReady && hasModelReady && !modelReady) {
-      setEndpointStatus('starting');
-
-      els.endpointLabel.textContent = 'Index ready, model warming…';
-      els.endpointChip.textContent = 'warming';
-    } else if (hasModelReady) {
-      setEndpointStatus('starting');
-      els.endpointLabel.textContent = 'Endpoint starting…';
-      els.endpointChip.textContent = 'starting';
-    }
-  } catch (err) {
-    console.error("problem in refreshStatusOnce: ", err.message)
-    setEndpointStatus('off');
-  }
-}
-
-async function refreshQueueOnce() {
-  try {
-    const data = await apiQueue({ health: false });  // let status line handle health
-
-    const q = Number(data?.queries_in_line ?? 0);
-    setQueueStatus(q);
-
-    // Optional: show extra info as a status message
-	if (typeof data?.resps_in_line === "number") {
-	  pushStatusMessageDedup(
-		`Queue: ${q} waiting • ${data.resps_in_line} responses pending`,
-		"queue"
-	  );
-	}
-
-    // queue resp message may contain the results of delayed chat messages
-    let delayed_resp = null;
-    const raw = data?.outgoing_resp;
-
-    if (typeof raw === "string") {
-      const trimmed = raw.trim();
-      if (trimmed) {
-        try {
-          //console.log("found outgoing queue resp. parsing...")
-          delayed_resp = JSON.parse(trimmed);
-        } catch (e) {
-          console.error("Failed to parse outgoing_resp", e, trimmed);
-        }
-      }
-    } else if (raw && typeof raw === "object") {
-      delayed_resp = raw;
-    }
-
-    if (delayed_resp) {
-        //console.log("refreshQueueOnce Got related resp: " + delayed_resp)
-        processQueuedMsg(delayed_resp.job_id, delayed_resp.reply)
-    }
-  } catch (e) {
-    console.error("refreshQueueOnce error: ", e.message)
-    setEndpointStatus('off');
-    // show unknown rather than lying with “0”
-    if (els.queueCountEl) els.queueCountEl.textContent = "—";
-    if (els.queueEtaEl) els.queueEtaEl.textContent = "—";
-	pushStatusMessageDedup(
-	  "Queue check failed (endpoint unreachable).",
-	  "queue-error"
-	);
-  }
-}
-
-
-// Use this to get status and queue just once
-function checkStatusAndQueue(sendHealth = true) {
-  refreshStatusOnce(sendHealth);
-  refreshQueueOnce();
-}
-
-// Use this method if we want to do continual polling
-function startPolling() {
-  setInterval(refreshQueueOnce, CFG.QUEUE_POLL_MS);
-  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
-}
-
-
-/* =========================================================
-   21) INIT / WIRING (bottom)
-   ========================================================= */
-   
-   
-function initDom() {
-  els.body = document.body;
-
-  // core chat
-  els.chatForm = document.getElementById('chat-form');
-  els.chatInput = document.getElementById('chat-input');
-  els.messagesEl = document.getElementById('messages');
-  els.chatContainer = document.getElementById('chat-container');
-  els.welcomeMessage = document.getElementById('welcome-message');
-
-  // theme + sidebar
-  els.themeToggleButtons = Array.from(document.querySelectorAll('[data-theme-toggle]'));
-  els.sidebar = document.getElementById('sidebar');
-  els.menuBtn = document.getElementById('menu-btn');
-  els.overlay = document.getElementById('overlay');
-  els.sidebarOpenBtn = document.getElementById('sidebar-open-btn');
-  els.sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
-
-  // tools
-  els.toolsBtn = document.getElementById('tools-btn');
-  els.toolsPopup = document.getElementById('tools-popup');
-
-  // refs
-  els.referencesContainer = document.getElementById('references-container');
-  els.referencesCount = document.getElementById('references-count');
-  els.referencesEmpty = document.getElementById('references-empty');
-  els.referencesTitle = document.getElementById('references-title');
-
-  // tool controls
-  els.historySlider = document.getElementById('history-slider');
-  els.historyValue = document.getElementById('history-value');
-  els.historyHelpN = document.getElementById('history-help-n');
-  els.modeHelp = document.getElementById('mode-help');
-  els.modeRadios = Array.from(document.querySelectorAll('input[name="mode"]'));
-
-  // status panel
-  els.endpointDot = document.getElementById('endpoint-dot');
-  els.endpointLabel = document.getElementById('endpoint-label');
-  els.endpointChip = document.getElementById('endpoint-chip');
-  els.queueCountEl = document.getElementById('queue-count');
-  els.queueEtaEl = document.getElementById('queue-eta');
-  els.statusMessagesEl = document.getElementById('status-messages');
- 
-  // saved convos
-  els.saveConvoBtn = document.getElementById('save-convo-btn');
-  els.recentList = document.getElementById('recent-list');
-
-  // trash chat
-  els.trashChatBtn = document.getElementById('trash-chat-btn');
-
-  // about
-  els.aboutBtn = document.getElementById('about-btn');
-
-  // feedback modal
-  els.fbOverlay = document.getElementById('fb-overlay');
-  els.fbClose = document.getElementById('fb-close');
-  els.fbCancel = document.getElementById('fb-cancel');
-  els.fbSubmit = document.getElementById('fb-submit');
-  els.fbMeta = document.getElementById('fb-meta');
-  els.fbAccuracy = document.getElementById('fb-accuracy');
-  els.fbStyle = document.getElementById('fb-style');
-  els.fbRelevance = document.getElementById('fb-relevance');
-  els.fbComments = document.getElementById('fb-comments');
-  els.fbToast = document.getElementById('fb-toast');
-  els.fbFieldAccuracy = document.getElementById('fb-field-accuracy');
-  els.fbFieldStyle = document.getElementById('fb-field-style');
-  els.fbJobId = document.getElementById('fb-job-id')
-
-  // custom modal
-  els.modalOverlay = document.getElementById('modal-overlay');
-  els.modalTitle = document.getElementById('modal-title');
-  els.modalMessage = document.getElementById('modal-message');
-  els.modalActions = document.getElementById('modal-actions');
-  els.modalCloseBtn = document.getElementById('modal-close');
-  
-  // input note status
-  els.noteTextWrap = document.getElementById('note-text');
-  els.noteMessage = document.getElementById('note-message');
-  els.noteSpinner = document.getElementById('note-spinner');
-
-  // version info
-  els.versionNum = document.getElementById('sidebar-version-num')
-  els.versionName = document.getElementById('sidebar-version-name')
-}
-
-function initVersion() {
-    els.versionNum.textContent = CFG.VERSION_NUM;
-    els.versionName.textContent = CFG.VERSION_NAME;
-}
-
-function initWiring() {
-  // modal overlay close
-  if (els.modalOverlay) {
-    els.modalOverlay.addEventListener('click', (e) => {
-      if (e.target === els.modalOverlay) closeModal(false);
-    });
-  }
-  if (els.modalCloseBtn) {
-    els.modalCloseBtn.addEventListener('click', () => closeModal(false));
-  }
-
-  // chat
-  if (els.chatForm) els.chatForm.addEventListener('submit', handleChatSubmit);
-  if (els.chatInput) {
-    els.chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        els.chatForm.requestSubmit();
-      }
-    });
-  }
-
-  // focus cursor on load
-  if (els.chatInput) {
-    els.chatInput.focus();
-    try { els.chatInput.setSelectionRange(els.chatInput.value.length, els.chatInput.value.length); } catch (_) {}
-  }
-
-  // save convo
-  if (els.saveConvoBtn) els.saveConvoBtn.addEventListener('click', saveCurrentConversation);
-
-  // trash chat
-  if (els.trashChatBtn) els.trashChatBtn.addEventListener('click', clearCurrentChat);
-}
-
-function init() {
-  initDom();
-
-  // sanity
-  if (!els.chatForm || !els.chatInput || !els.messagesEl) {
-    console.warn('Seeds of Truth app.js: required chat elements not found.');
-    return;
-  }
-
-  // set version info
-  initVersion();
-
-  // tool state
-  loadToolState();
-
-  // default locked until server says otherwise
-  setModeAccess(false);
-
-  // theme + sidebar + tools
-  initTheme();
-  initSidebarCollapse();
-  initMobileSidebar();
-  initToolsPopup();
-
-  // feedback + about + wiring
-  initFeedbackModal();
-  initAboutModal();
-  initWiring();
-
-  // helpers
-  initRangeFill();
-  initAutosizeTextarea();
-  initPingTest();
-  renderRecentList();
-  renderToolState();
-
-  // lock modal
-  initLockUI();
-
-  // ask server whether this session is already unlocked
-  apiAccess()
-    .then(d => {
-            const unlocked = !!d.unlocked;
-            setModeAccess(unlocked);
-            if (unlocked) {
-                toolState.mode = "chat";
-            }
-        }
-     )
-    .catch(() => setModeAccess(false));
-
-  // set initial status / queue check on page load
-  checkStatusAndQueue(true);
-
-  // starts continual polling for status and delayed responses
-  // @TODO: Implement something smarter. Perhaps polling need only occur if we know we have delayed responses.
-  startPolling();
-
-  // expose debug hooks
-  window.setReferences = setReferences;
-  window.openFeedbackModal = openFeedbackModal;
-  window.pushStatusMessage = pushStatusMessage;
-}
-
-document.addEventListener('DOMContentLoaded', init);
-
-(function clickDistortion(){
-  const host = document.getElementById('click-distort');
-  const svg = document.querySelector('filter#sot-displace');
-  if (!host || !svg) return;
-
-  // Find the displacement map inside the filter
-  const disp = document.querySelector('#sot-displace feDisplacementMap');
-  const turb = document.querySelector('#sot-displace feTurbulence');
-  if (!disp || !turb) return;
-
-  let seed = 2;
-
-  function spawn(x, y){
-    // Lens
-    const lens = document.createElement('div');
-    lens.className = 'click-lens';
-    lens.style.left = x + 'px';
-    lens.style.top  = y + 'px';
-
-    // Ring
-    const ring = document.createElement('div');
-    ring.className = 'click-ring';
-    ring.style.left = x + 'px';
-    ring.style.top  = y + 'px';
-
-    host.appendChild(lens);
-    host.appendChild(ring);
-
-    // Vary noise a bit each click
-    seed = (seed + 1) % 9999;
-    turb.setAttribute('seed', String(seed));
-
-    // Animate: bump distortion up then down quickly
-    // Note: filter is shared, but we only show one lens briefly.
-    disp.setAttribute('scale', '0');
-
-    // turn on transitions next frame
-    requestAnimationFrame(() => {
-      lens.classList.add('on');
-      ring.classList.add('on');
-
-      // distortion punch
-      disp.setAttribute('scale', '26');
-
-      // ease back
-      setTimeout(() => disp.setAttribute('scale', '0'), 140);
-
-      // cleanup
-      setTimeout(() => {
-        lens.remove();
-        ring.remove();
-      }, 520);
-    });
-  }
-
-  // Use pointerdown so it works on touch too
-  window.addEventListener('pointerdown', (e) => {
-    // ignore right-click
-    if (e.button === 2) return;
-    spawn(e.clientX, e.clientY);
-  }, { passive: true });
-})();
+
+
+# ------------------ Routes: Search (always allowed) ------------------
+
+@app.post("/api/search")
+def api_search():
+    try:
+        payload = request.get_json(silent=True) or {}
+        query = (payload.get("query") or "").strip()
+
+        # Back-compat: existing UI sends max_n; new UI can send top_k
+        try:
+            top_k = int(payload.get("top_k", payload.get("max_n", 10)))
+        except Exception:
+            return jsonify({"ok": False, "error": "Field 'top_k'/'max_n' must be an integer"}), 400
+
+        # Closest shards to search (centroid routing count)
+        try:
+            shard_k = int(payload.get("shard_k", 20))
+        except Exception:
+            return jsonify({"ok": False, "error": "Field 'shard_k' must be an integer"}), 400
+
+        if not query:
+            return jsonify({"ok": False, "error": "Field 'query' must be a non-empty string"}), 400
+        if top_k <= 0 or top_k > 200:
+            return jsonify({"ok": False, "error": "Field 'top_k' must be between 1 and 200"}), 400
+        if shard_k <= 0 or shard_k > 200:
+            return jsonify({"ok": False, "error": "Field 'shard_k' must be between 1 and 200"}), 400
+
+        # Call search_corpus in a compatible way
+        sig = inspect.signature(search_corpus)
+        params = sig.parameters
+
+        if "shard_k" in params:
+            results = search_corpus(query, top_k=top_k, shard_k=shard_k)
+        elif "centroid_k" in params:
+            results = search_corpus(query, top_k=top_k, centroid_k=shard_k)  # in case you used centroid_k
+        else:
+            # old signature: search_corpus(query, top_k)
+            results = search_corpus(query, top_k)
+
+        # Normalize results BEFORE .get calls (prevents HTML 500)
+        if not isinstance(results, dict):
+            results = {"results": []}
+
+        out_list = results.get("results", [])
+        if not isinstance(out_list, list):
+            out_list = []
+
+        cleaned_list = rag_controller.clean_rag_references(out_list)
+        app_logger.info(f"Original search_references api_search: {out_list}")
+
+        num_results = results.get("num_results")
+        if not isinstance(num_results, int):
+            num_results = len(cleaned_list)
+
+        app_logger.info(f"\n\n*****\n Cleaned search_references api_search: {cleaned_list} \n\n*****")
+
+        message = results.get("message")
+        if not isinstance(message, str) or not message.strip():
+            message = f"Found {num_results} result(s)."
+
+        return jsonify({
+            "ok": True,
+            "query": query,
+            "num_results": num_results,
+            "message": message,
+            "references": cleaned_list,
+            "results": cleaned_list,
+            "top_k": top_k,
+            "shard_k": shard_k,
+        }), 200
+
+    except Exception as e:
+        # Always return JSON so the frontend sees the real error.
+        tb = traceback.format_exc()
+        try:
+            app_logger.exception("Search failed")
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": False,
+            "error": "Search failed",
+            "detail": str(e),
+            "traceback": tb,
+        }), 500
+
+
+# ------------------ Routes: Chat (gated) ------------------
+
+@app.post("/api/chat")
+def api_chat():
+    """
+    Implements normal chat mode
+    """
+    global inflight_chat_reqs, rate_limiter
+
+    locked = _require_unlocked()
+    if locked:
+        return locked
+
+    payload = request.get_json(silent=True) or {}
+    use_rag = payload.get("use_rag", True)
+    use_rag = bool(use_rag)
+    msg = (payload.get("message") or payload.get("query") or "").strip()
+    if not msg:
+        return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
+
+    # optional param that lets us test force to the queue
+    force_queue_str = (payload.get("force_queue") or "").strip()
+    force_queue = utils.str_to_bool(force_queue_str, strict=False)
+
+    user_id = payload.get("user_id", "none")
+    if not isinstance(user_id, str):
+        app_logger.warn("Chat request user_id was invalid")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' must be a string"
+        }), 400
+
+    # TODO: Enforce user_id must equal current or seen uuid or fail request.
+    user_id = user_id.strip()
+    if user_id == "none":
+        app_logger.warning("Chat request user_id cannot be none")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' cannot be none or empty"
+        }), 400
+
+    model_type = payload.get("model_type", None)
+    if model_type is None:
+        app_logger.warning("Chat request model_type was missing")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'model_type' was missing"
+        }), 400
+
+    if not model_adapters.is_valid_model_type(model_type):
+        app_logger.warning(f"Chat request model_type was invalid: {model_type}")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'model_type' was invalid"
+        }), 400
+
+    # rate limit check. blocks if user sending too frequently.
+    if not rate_limiter.check(user_id):
+        app_logger.warning("Chat request user_id was rate limited")
+        return jsonify({
+            "ok": False,
+            "error": "Chat request was rate limited. Please wait 30 seconds before resubmission."
+        }), 429
+    else:
+        app_logger.info("Rate limiting check passed")
+
+    job_id = "none"
+    try:
+        app_logger.info(f"Inserting new job for user_id {user_id} into db...")
+        job_id = db.insert_job(user_id, msg)
+        app_logger.info(f"Job write to db was successful, job_id {job_id}.")
+    except Exception as e:
+        app_logger.exception("DB insert failed")
+        return jsonify({
+            "ok": False,
+            "error": "Could not insert job to database",
+            "job_id": job_id,
+            "user_id": user_id,
+            "detail": str(e),
+        }), 500
+
+    model_ready = rag_controller.is_model_ready()
+    if not model_ready or force_queue:
+        preview_msg = msg[:40]
+        app_logger.warning(f"Model is not ready. Queueing msg for user {user_id}. Msg: {preview_msg}...  ")
+
+        # send wake-up request to model
+        rag_controller.send_warmup()
+        rag_controller.queue_job(user_id, job_id, model_type, msg)
+
+        return jsonify({
+            "ok": False,
+            "error": "Model not ready. Job was queued.",
+            "job_id": job_id,
+            "user_id": user_id,
+            "detail": ""
+        }), 503
+    else:
+        app_logger.info("Model is ready for requests")
+
+    try:
+        app_logger.info("Triggering chat_with_corpus...")
+
+        # track the inflight requests for queue depth reporting
+        inflight_chat_reqs.inc()
+
+        # LLM model call goes here
+        answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        app_logger.info(f"Original search references in api_chat: {docs}")
+
+        # clean up docs of copyrighted material
+        cleaned_docs = rag_controller.clean_rag_references(docs)
+
+        app_logger.info(f"Marking job {job_id} as done in db...")
+        db.mark_done(job_id, answer)
+
+        inflight_chat_reqs.dec()
+    except RuntimeError as e:
+        app_logger.error(f"chat_with_corpus failed: {e}")
+
+        inflight_chat_reqs.dec()
+        return jsonify({
+            "ok": False,
+            "error": "Search system not initialized",
+            "job_id": job_id,
+            "user_id": user_id,
+            "detail": str(e)
+        }), 503
+    except Exception as e:
+        app_logger.error(f"chat_with_corpus failed: {e}")
+        app_logger.warning(f"Chat failed with exception: {e}")
+
+        inflight_chat_reqs.dec()
+        return jsonify({
+            "ok": False,
+            "error": "Chat failed",
+            "job_id": job_id,
+            "user_id": user_id,
+            "detail": str(e)
+        }), 500
+
+    app_logger.info(f"chat operation was completed successfully, job_id {job_id}.")
+    return jsonify({
+        "ok": True,
+        "reply": answer,
+        "job_id": job_id,
+        "user_id": user_id,
+        "detail": "success",
+        "references": cleaned_docs
+    }), 200
+
+
+# ------------------ Routes: A/B (gated, simple dev version) ------------------
+
+@app.post("/api/ab")
+def api_ab():
+    """
+    Implements A vs. B comparison for the given loaded model
+    Does no queueing, returns with error if model not ready
+    """
+    global inflight_chat_reqs, rate_limiter
+
+    locked = _require_unlocked()
+    if locked:
+        return locked
+
+    payload = request.get_json(silent=True) or {}
+    use_rag = payload.get("use_rag", True)
+    use_rag = bool(use_rag)
+    msg = (payload.get("message") or payload.get("query") or "").strip()
+    if not msg:
+        return jsonify({"ok": False, "error": "Field 'message' must be a non-empty string"}), 400
+
+    user_id = payload.get("user_id", "none")
+    if not isinstance(user_id, str):
+        app_logger.warn("Chat request user_id was invalid")
+        return jsonify({
+            "ok": False,
+            "error": "Field 'user_id' must be a string"
+        }), 400
+
+    # TODO: Enforce user_id must equal current or seen uuid or fail request.
+    user_id = user_id.strip()
+    if user_id == "none":
+        app_logger.warning("Chat request user_id cannot be none")
+        return jsonify({
+            "ok": False,
+            "error": "AB test failed. Field 'user_id' cannot be none or empty"
+        }), 400
+
+    # model must be ready for AB test
+    app_logger.info(f"Health request received: user_id '{user_id}'")
+    model_ready = rag_controller.is_model_ready()
+    if not model_ready:
+        preview_msg = msg[:40]
+        app_logger.warning(f"Model is not ready. AB test unavailable for message '{preview_msg}...'")
+
+        # send wake-up request to model
+        rag_controller.send_warmup()
+
+        return jsonify({
+            "ok": False,
+            "error": "Model not ready. AB test unavailable.",
+            "job_id": "none",
+            "user_id": user_id,
+            "detail": ""
+        }), 503
+    else:
+        app_logger.info("Model is ready for requests")
+
+    # rate limit check. blocks if user sending too frequently.
+    if not rate_limiter.check(user_id):
+        app_logger.warning("Chat request user_id was rate limited")
+        return jsonify({
+            "ok": False,
+            "error": "AB Chat request was rate limited. Please wait 30 seconds before resubmission."
+        }), 429
+    else:
+        app_logger.info("Rate limiting check passed")
+
+    inflight_chat_reqs.inc()
+    inflight_chat_reqs.inc()
+
+    # Get two job ids for use, fail if either one doesn't work
+    job_id_a = "none"
+    job_id_b = "none"
+    try:
+        app_logger.info(f"Inserting jobs for user_id {user_id} for AB testing into db...")
+        job_id_a = db.insert_job(user_id, msg)
+        job_id_b = db.insert_job(user_id, msg)
+        app_logger.info(f"Job write to db for AB testing was successful, job_id_a {job_id_a}, job_id_b {job_id_b}.")
+    except Exception as e:
+        app_logger.warning(f"AB test failed due to db job insert problem: {e}")
+
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
+        return jsonify({
+            "ok": False,
+            "error": "Could not insert job to database",
+            "user_id": user_id,
+            "detail": ""
+        }), 500
+
+    # Simple dev A/B: ask twice with slightly different prompts.
+    # Replace later with true multi-model or different temperatures.
+    # Let client override shard_k/top_k for testing
+    try:
+        shard_k = int(payload.get("shard_k", 20))
+        top_k = int(payload.get("top_k", 10))
+    except Exception:
+        shard_k, top_k = 20, 10
+
+    # TODO: FIX ME LATER
+    model_type_a = "hf"
+    model_type_b = "hf"
+
+    try:
+        # A
+        a_answer, a_refs = chat_with_corpus(model_type_a, msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+
+        # B (alternate phrasing prompt)
+        b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
+        b_answer, b_refs = chat_with_corpus(model_type_b, b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+
+        app_logger.info(f"Marking job {job_id_a} as done in db...")
+        db.mark_done(job_id_a, a_answer)
+        app_logger.info(f"Marking job {job_id_b} as done in db...")
+        db.mark_done(job_id_b, b_answer)
+
+        app_logger.info(f"AB test done")
+
+    except RuntimeError as e:
+        app_logger.exception("AB failed")
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
+        return jsonify({"ok": False, "error": "Search system not initialized", "detail": str(e)}), 503
+    except Exception as e:
+        inflight_chat_reqs.dec()
+        inflight_chat_reqs.dec()
+
+        app_logger.exception("AB failed")
+        return jsonify({"ok": False, "error": "AB failed", "detail": str(e)}), 500
+
+    inflight_chat_reqs.dec()
+    inflight_chat_reqs.dec()
+
+    return jsonify({
+        "ok": True,
+        "a": a_answer,
+        "b": b_answer,
+        "references_a": a_refs,
+        "references_b": b_refs,
+        "job_id_a": job_id_a,
+        "job_id_b": job_id_b,
+    }), 200
+
+
+
+# ------------------ Routes: Feedback + Status + Queue ------------------
+
+MODEL_CHECK_TIMEOUT_SECS = 5
+
+
+@app.route("/api/feedback", methods=["POST", "GET"])
+def api_feedback():
+    global rate_limiter
+
+    locked = _require_unlocked()
+    if locked:
+        return locked
+
+    payload = request.get_json(silent=True) or {}
+    job_id = utils.get_payload_str(payload, "job_id", None)
+    if not job_id or len(job_id) == 0:
+        app_logger.warning("Feedback request failed due to bad job_id param")
+        return jsonify({"ok": False, "error": "Field 'job_id' must be a non-empty string"}), 400
+
+    relevance = utils.get_payload_int(payload, "relevance", None)
+    if not relevance:
+        app_logger.warning("Feedback request failed due to bad relevance param")
+        return jsonify({"ok": False, "error": "Field 'relevance' must be integer"}), 400
+
+    accuracy = utils.get_payload_int(payload, "accuracy", None)
+    if not accuracy:
+        app_logger.warning("Feedback request failed due to bad accuracy param")
+        return jsonify({"ok": False, "error": "Field 'accuracy' must be integer"}), 400
+
+    style = utils.get_payload_int(payload, "style", None)
+    if not style:
+        app_logger.warning("Feedback request failed due to bad style param")
+        return jsonify({"ok": False, "error": "Field 'style' must be integer"}), 400
+
+    comments = utils.get_payload_str(payload, "comments", "")
+    app_logger.info(f"feedback request received for job_id {job_id}, comments {comments[:20]}")
+
+    # job id should exist in jobs table
+    if not db.job_exists(job_id):
+        app_logger.warning(f"Feedback request failed due to non-existent job_id: {job_id}")
+        return jsonify({"ok": False, "error": "job_id was invalid"}), 400
+
+    try:
+        app_logger.info(f"Feedback request received: job_id '{job_id}', relevance {relevance}, accuracy {accuracy}, style {style}, comments '{comments}' ")
+        db.insert_feedback(job_id, relevance, accuracy, style, comments)
+        app_logger.info("Feedback was successfully saved")
+    except Exception as e:
+        app_logger.error(f"insert feedback failed: {e}")
+        return jsonify({"ok": False, "error": "feedback write failed", "detail": str(e)}), 500
+
+    return jsonify({"ok": True, "status": "feedback was successful"}), 200
+
+
+@app.route("/api/status", methods=["GET", "POST"])
+@no_time_gate
+def api_status():
+    unlocked = _is_unlocked()
+
+    payload = request.get_json(silent=True) or {}
+    health_str = (payload.get("health") or "").strip()
+    health = utils.str_to_bool(health_str, strict=False)
+    user_id = (payload.get("user_id") or "").strip()
+
+    is_within_hours = is_within_service_hours()
+    if health and is_within_hours:
+        app_logger.info("status health checked")
+        model_ready = rag_controller.is_model_ready()
+    else:
+        app_logger.info("status health unchecked")
+        model_ready = "unchecked"
+
+    app_logger.info(f"status request received for user_id: {user_id}, is_unlocked: {unlocked}, model_ready: {model_ready}, health {health}, is_within_hours {is_within_hours}")
+
+    if model_ready == "unchecked":
+        app_logger.info("api_status model_ready unchecked")
+        return jsonify({
+            "ok": True,
+            "status": "status was successful",
+            "unlocked": _is_unlocked(),
+            "retrieval_state_ready": retrieval_state is not None,
+        }), 200
+    else:
+        app_logger.info(f"api_status model_ready {model_ready}")
+        return jsonify({
+            "ok": True,
+            "status": "status was successful",
+            "unlocked": _is_unlocked(),
+            "retrieval_state_ready": retrieval_state is not None,
+            "model_ready": model_ready,
+        }), 200
+
+
+# TODO: The queries_in_line may not be accurate for queries that are purely in-flight and not stored in the queue.
+@app.post("/api/queue")
+@no_time_gate
+def api_queue():
+    """
+    This allows clients to get info on queue depth and endpoint status.
+    Logged-in clients are able to get the status of their requests and any pending responses.
+    """
+    global inflight_chat_reqs
+
+    locked = _require_unlocked()
+    payload = request.get_json(silent=True) or {}
+
+    queue_len = rag_controller.job_queue_len() + inflight_chat_reqs.get()
+    resp_len = rag_controller.outgoing_queue_len()
+
+    user_id = (payload.get("user_id") or "").strip()
+    #app_logger.info(f"locked: {not locked}, user_id: {user_id}")
+
+    if not locked and user_id:
+        # This is logged-in mode. It will fetch any user specific info and outgoing responses.
+        app_logger.info(f"processing api_queue() request in logged-in mode for user {user_id}")
+
+        job_index, queued_job = rag_controller.fetch_queued_job_info(user_id)
+        queued_resp = rag_controller.fetch_queued_outgoing_info(user_id)
+
+        if queued_job is not None or queued_resp is not None:
+            app_logger.info(f"Queued response was found for used_id {user_id}")
+
+            resp_json = ""
+            if queued_resp is not None:
+                resp_json = queued_resp.to_json()
+
+            return jsonify({
+                "ok": True,
+                "queries_in_line": queue_len,
+                "resps_in_line": resp_len,
+                "job_in_line": job_index,
+                "outgoing_resp": resp_json,
+                "server_time": time_module.time()
+            }), 200
+        else:
+            #app_logger.info(f"No queued response was found for used_id {user_id}. Processing for general. queries_in_line {queue_len}, resps_in_line {resp_len}")
+            pass
+
+
+    # This is the general view for those that aren't logged in.
+    #app_logger.info(f"processing api_queue() request in general mode")
+
+    return jsonify({
+        "ok": True,
+        "queries_in_line": queue_len,
+        "resps_in_line": resp_len,
+        "server_time": time_module.time()
+    }), 200
+
+
+# ------------------ Local dev runner ------------------
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
