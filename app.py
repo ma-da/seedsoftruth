@@ -92,7 +92,7 @@ RATE_LIMITING_INTERVAL = 30
 rate_limiter = utils.SimpleUserRateLimiter(RATE_LIMITING_INTERVAL)
 
 # Server time gating
-ENABLE_TIME_GATING = True
+ENABLE_TIME_GATING = False
 EASTERN_TZ = ZoneInfo("America/New_York")
 START_TIME = time(9, 0)   # 9:00 AM
 END_TIME   = time(22, 0)  # 10:00 PM
@@ -485,8 +485,9 @@ def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int 
             retrieval_state,
             retrieval_text,
             top_k=int(top_k),
-            centroid_k=int(shard_k),
             verbose=False,
+            entity_source_query=q,
+            fulltext_query=retrieval_text,
         )
 
         docs = []
