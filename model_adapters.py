@@ -112,7 +112,10 @@ MODEL_ADAPTOR_NAMES = ["hf", "deepinfra"]
 # --- Huggingface params ---
 
 # endpoint wtk-trineday-mini-llama3-70b-muu
-HF_ENDPOINT_URL = "https://d6pfgv6yisy4pld2.us-east-1.aws.endpoints.huggingface.cloud" #os.getenv("HF_ENDPOINT_URL", "").strip()
+#HF_ENDPOINT_URL = "https://d6pfgv6yisy4pld2.us-east-1.aws.endpoints.huggingface.cloud" #os.getenv("HF_ENDPOINT_URL", "").strip()
+
+# wtk-gamma-llama3-70b-v9
+HF_ENDPOINT_URL = "https://uzaql3yibrec7cht.us-east4.gcp.endpoints.huggingface.cloud"
 
 HF_API_KEY = os.getenv("HF_API_KEY", "").strip()
 HF_TIMEOUT = int(os.getenv("HF_TIMEOUT_SECS", "900"))
