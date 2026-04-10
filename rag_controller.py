@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import spacy
 from dataclasses_json import dataclass_json
+import string
 
 import logging_config
 import model_adapters
@@ -321,6 +322,57 @@ def clean_retrieval_text(text: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+_PUNCT_CHARS = set(string.punctuation)
+
+def _punct_stats(text: str) -> dict:
+    s = str(text or "")
+    if not s:
+        return {
+            "length": 0,
+            "punct_ratio": 0.0,
+            "dash_ratio": 0.0,
+            "max_punct_run": 0,
+        }
+
+    length = len(s)
+    punct_count = sum(1 for ch in s if ch in _PUNCT_CHARS)
+    dash_count = s.count("-") + s.count("–") + s.count("—")
+
+    runs = re.findall(r"[\-–—.,;:!?/\\|_]{2,}", s)
+    max_punct_run = max((len(r) for r in runs), default=0)
+
+    return {
+        "length": length,
+        "punct_ratio": punct_count / max(length, 1),
+        "dash_ratio": dash_count / max(length, 1),
+        "max_punct_run": max_punct_run,
+    }
+
+def _looks_too_punct_noisy(title: str, text: str) -> bool:
+    """
+    Conservative filter for ugly OCR / citation sludge / punctuation soup.
+    Tune thresholds after a few test queries.
+    """
+    title_stats = _punct_stats(title)
+    text_stats = _punct_stats(text[:1200])   # check only the early part
+
+    # hard junk
+    if text_stats["max_punct_run"] >= 8:
+        return True
+
+    # extremely punctuation-heavy text
+    if text_stats["punct_ratio"] > 0.18:
+        return True
+
+    # too dash-heavy usually means broken URLs / citations / OCR soup
+    if text_stats["dash_ratio"] > 0.035:
+        return True
+
+    # noisy titles are often a warning sign too
+    if title_stats["punct_ratio"] > 0.22:
+        return True
+
+    return False
 
 # ------------------ RENDERING / RESULT HELPERS ------------------
 
@@ -413,42 +465,64 @@ def _hybrid_search_sqlite(
     conn = _get_sqlite_conn(state)
     cur = conn.cursor()
 
-    entity_query = build_entity_match_query(entity_terms, require_all=require_all_entities)
+    entity_query = build_entity_match_query(
+        entity_terms,
+        require_all=require_all_entities,
+    )
 
     strict_fulltext_query = build_fulltext_query(fulltext_query, require_all=True)
     broad_fulltext_query = build_fulltext_query(fulltext_query, require_all=False)
 
     entity_rows = []
     if entity_query:
-        entity_rows = list(cur.execute("""
-            SELECT rowid AS lookup_id, bm25(entities_fts) AS bm25_score
-            FROM entities_fts
-            WHERE entities_fts MATCH ?
-            ORDER BY bm25_score
-            LIMIT ?
-        """, (entity_query, HYBRID_ENTITY_LIMIT)))
+        entity_rows = list(
+            cur.execute(
+                """
+                SELECT rowid AS lookup_id, bm25(entities_fts) AS bm25_score
+                FROM entities_fts
+                WHERE entities_fts MATCH ?
+                ORDER BY bm25_score
+                LIMIT ?
+                """,
+                (entity_query, HYBRID_ENTITY_LIMIT),
+            )
+        )
 
     fulltext_rows = []
     fulltext_query_used = ""
 
     if strict_fulltext_query:
-        fulltext_rows = list(cur.execute("""
-            SELECT rowid AS lookup_id, bm25(fulltext_fts) AS bm25_score
-            FROM fulltext_fts
-            WHERE fulltext_fts MATCH ?
-            ORDER BY bm25_score
-            LIMIT ?
-        """, (strict_fulltext_query, HYBRID_FULLTEXT_LIMIT)))
+        fulltext_rows = list(
+            cur.execute(
+                """
+                SELECT rowid AS lookup_id, bm25(fulltext_fts) AS bm25_score
+                FROM fulltext_fts
+                WHERE fulltext_fts MATCH ?
+                ORDER BY bm25_score
+                LIMIT ?
+                """,
+                (strict_fulltext_query, HYBRID_FULLTEXT_LIMIT),
+            )
+        )
         fulltext_query_used = strict_fulltext_query
 
-    if not fulltext_rows and broad_fulltext_query and broad_fulltext_query != strict_fulltext_query:
-        fulltext_rows = list(cur.execute("""
-            SELECT rowid AS lookup_id, bm25(fulltext_fts) AS bm25_score
-            FROM fulltext_fts
-            WHERE fulltext_fts MATCH ?
-            ORDER BY bm25_score
-            LIMIT ?
-        """, (broad_fulltext_query, HYBRID_FULLTEXT_LIMIT)))
+    if (
+        not fulltext_rows
+        and broad_fulltext_query
+        and broad_fulltext_query != strict_fulltext_query
+    ):
+        fulltext_rows = list(
+            cur.execute(
+                """
+                SELECT rowid AS lookup_id, bm25(fulltext_fts) AS bm25_score
+                FROM fulltext_fts
+                WHERE fulltext_fts MATCH ?
+                ORDER BY bm25_score
+                LIMIT ?
+                """,
+                (broad_fulltext_query, HYBRID_FULLTEXT_LIMIT),
+            )
+        )
         fulltext_query_used = broad_fulltext_query
 
     merged: Dict[int, Dict[str, float]] = {}
@@ -456,61 +530,123 @@ def _hybrid_search_sqlite(
     for row in entity_rows:
         lookup_id = int(row["lookup_id"])
         score = _fts_positive_score(row["bm25_score"])
-        merged.setdefault(lookup_id, {"entity_score": 0.0, "fulltext_score": 0.0})
-        merged[lookup_id]["entity_score"] = max(merged[lookup_id]["entity_score"], score)
+        merged.setdefault(
+            lookup_id,
+            {
+                "entity_score": 0.0,
+                "fulltext_score": 0.0,
+            },
+        )
+        merged[lookup_id]["entity_score"] = max(
+            merged[lookup_id]["entity_score"],
+            score,
+        )
 
     for row in fulltext_rows:
         lookup_id = int(row["lookup_id"])
         score = _fts_positive_score(row["bm25_score"])
-        merged.setdefault(lookup_id, {"entity_score": 0.0, "fulltext_score": 0.0})
-        merged[lookup_id]["fulltext_score"] = max(merged[lookup_id]["fulltext_score"], score)
+        merged.setdefault(
+            lookup_id,
+            {
+                "entity_score": 0.0,
+                "fulltext_score": 0.0,
+            },
+        )
+        merged[lookup_id]["fulltext_score"] = max(
+            merged[lookup_id]["fulltext_score"],
+            score,
+        )
 
     ranked = []
     for lookup_id, parts in merged.items():
-        # old version was too strict:
-        # if entity_terms and parts["entity_score"] == 0:
-        #     continue
-
         hybrid_score = (
             HYBRID_ENTITY_WEIGHT * parts["entity_score"]
             + HYBRID_FULLTEXT_WEIGHT * parts["fulltext_score"]
         )
-
-        ranked.append((lookup_id, hybrid_score, parts["entity_score"], parts["fulltext_score"]))
+        ranked.append(
+            (
+                lookup_id,
+                hybrid_score,
+                parts["entity_score"],
+                parts["fulltext_score"],
+            )
+        )
 
     ranked.sort(key=lambda x: x[1], reverse=True)
-    ranked = ranked[:top_k]
+
+    # Over-fetch before punctuation filtering so we still have enough survivors.
+    prefilter_limit = max(top_k * 5, 50)
+    ranked = ranked[:prefilter_limit]
 
     if not ranked:
         rag_logger.info(
-            "Hybrid search empty. entity_terms=%s entity_query=%s fulltext_query_used=%s",
-            entity_terms, entity_query, fulltext_query_used
+            "Hybrid search empty. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d",
+            entity_terms,
+            entity_query,
+            fulltext_query_used,
+            len(entity_rows),
+            len(fulltext_rows),
         )
         return []
 
     ids = [r[0] for r in ranked]
     placeholders = ",".join("?" for _ in ids)
-    meta_rows = list(cur.execute(f"""
-        SELECT lookup_id, chunk_id, title, subset_name, domain, fulltext_text, source_url
-        FROM chunks
-        WHERE lookup_id IN ({placeholders})
-    """, ids))
+
+    meta_rows = list(
+        cur.execute(
+            f"""
+            SELECT lookup_id, chunk_id, title, subset_name, domain, fulltext_text, source_url
+            FROM chunks
+            WHERE lookup_id IN ({placeholders})
+            """,
+            ids,
+        )
+    )
     meta_map = {int(r["lookup_id"]): r for r in meta_rows}
 
     results = []
+    dropped_noisy = 0
+
     for lookup_id, hybrid_score, entity_score, fulltext_score in ranked:
         row = meta_map.get(lookup_id)
-        if row is not None:
-            results.append(_sqlite_row_to_result(row, hybrid_score, entity_score, fulltext_score))
+        if row is None:
+            continue
+
+        title = str(row["title"] or "")
+        fulltext_text = str(row["fulltext_text"] or "")
+
+        if _looks_too_punct_noisy(title, fulltext_text):
+            dropped_noisy += 1
+            continue
+
+        result = _sqlite_row_to_result(
+            row,
+            hybrid_score,
+            entity_score,
+            fulltext_score,
+        )
+
+        # Handy extra fields for debugging / frontend console
+        result["hybrid_score"] = float(hybrid_score)
+        result["entity_score"] = float(entity_score)
+        result["fulltext_score"] = float(fulltext_score)
+        result["search_closeness"] = float(hybrid_score)
+        result["entity_query_used"] = entity_query or ""
+        result["fulltext_query_used"] = fulltext_query_used or ""
+
+        results.append(result)
+
+    results = results[:top_k]
 
     rag_logger.info(
-        "Hybrid search ok. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d results=%d",
+        "Hybrid search final. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d kept=%d dropped_noisy=%d",
         entity_terms,
         entity_query,
         fulltext_query_used,
         len(entity_rows),
         len(fulltext_rows),
         len(results),
+        dropped_noisy,
     )
 
     return results
@@ -1042,3 +1178,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
