@@ -322,7 +322,19 @@ def clean_retrieval_text(text: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+# filter indexes out of results
+
 _PUNCT_CHARS = set(string.punctuation)
+
+_URLISH_RE = re.compile(r"https?://|www\.", re.I)
+_BRACKET_CIT_RE = re.compile(r"\[\d{1,3}\]")
+_BROKEN_URL_DASH_RE = re.compile(r"\b[a-z0-9]+\s*-\s*[a-z0-9]+\s*-\s*[a-z0-9]+", re.I)
+_BIBLIO_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_AUTHOR_QUOTE_RE = re.compile(r'"[^"]{8,}"')
+_MULTI_SEMI_RE = re.compile(r";")
+_MULTI_SLASH_RE = re.compile(r"/")
+_REPEAT_DASH_RE = re.compile(r"(?:\s-\s){3,}")
+_REFERENCE_LINE_RE = re.compile(r"\[\d{1,3}\].{0,140}?(?:https?://|www\.)", re.I)
 
 def _punct_stats(text: str) -> dict:
     s = str(text or "")
@@ -332,6 +344,15 @@ def _punct_stats(text: str) -> dict:
             "punct_ratio": 0.0,
             "dash_ratio": 0.0,
             "max_punct_run": 0,
+            "urlish_count": 0,
+            "bracket_citation_count": 0,
+            "broken_url_dash_count": 0,
+            "year_count": 0,
+            "quote_title_count": 0,
+            "semicolon_count": 0,
+            "slash_count": 0,
+            "repeat_dash_runs": 0,
+            "reference_line_count": 0,
         }
 
     length = len(s)
@@ -346,30 +367,67 @@ def _punct_stats(text: str) -> dict:
         "punct_ratio": punct_count / max(length, 1),
         "dash_ratio": dash_count / max(length, 1),
         "max_punct_run": max_punct_run,
+        "urlish_count": len(_URLISH_RE.findall(s)),
+        "bracket_citation_count": len(_BRACKET_CIT_RE.findall(s)),
+        "broken_url_dash_count": len(_BROKEN_URL_DASH_RE.findall(s)),
+        "year_count": len(_BIBLIO_YEAR_RE.findall(s)),
+        "quote_title_count": len(_AUTHOR_QUOTE_RE.findall(s)),
+        "semicolon_count": len(_MULTI_SEMI_RE.findall(s)),
+        "slash_count": len(_MULTI_SLASH_RE.findall(s)),
+        "repeat_dash_runs": len(_REPEAT_DASH_RE.findall(s)),
+        "reference_line_count": len(_REFERENCE_LINE_RE.findall(s)),
     }
 
 def _looks_too_punct_noisy(title: str, text: str) -> bool:
     """
-    Conservative filter for ugly OCR / citation sludge / punctuation soup.
-    Tune thresholds after a few test queries.
+    Filters citation soup / OCR sludge / bibliography dumps.
+    Tuned to catch things like:
+    [6] Author, "Title," site, 2016, http://...
     """
     title_stats = _punct_stats(title)
-    text_stats = _punct_stats(text[:1200])   # check only the early part
+    text_stats = _punct_stats(text[:1600])
 
-    # hard junk
+    # Extremely obvious garbage
     if text_stats["max_punct_run"] >= 8:
         return True
 
-    # extremely punctuation-heavy text
-    if text_stats["punct_ratio"] > 0.18:
+    if text_stats["reference_line_count"] >= 2:
         return True
 
-    # too dash-heavy usually means broken URLs / citations / OCR soup
-    if text_stats["dash_ratio"] > 0.035:
+    if text_stats["bracket_citation_count"] >= 4 and text_stats["urlish_count"] >= 2:
         return True
 
-    # noisy titles are often a warning sign too
-    if title_stats["punct_ratio"] > 0.22:
+    if text_stats["broken_url_dash_count"] >= 3:
+        return True
+
+    if text_stats["repeat_dash_runs"] >= 1 and text_stats["urlish_count"] >= 2:
+        return True
+
+    # Citation-heavy bibliography sludge
+    if (
+        text_stats["bracket_citation_count"] >= 3
+        and text_stats["year_count"] >= 3
+        and text_stats["quote_title_count"] >= 2
+    ):
+        return True
+
+    # General punctuation overload with URL/citation support
+    if text_stats["punct_ratio"] > 0.16 and text_stats["urlish_count"] >= 2:
+        return True
+
+    if text_stats["dash_ratio"] > 0.03 and text_stats["broken_url_dash_count"] >= 2:
+        return True
+
+    if text_stats["semicolon_count"] >= 6:
+        return True
+
+    if text_stats["slash_count"] >= 8 and text_stats["urlish_count"] >= 1:
+        return True
+
+    # Ugly titles are suspicious too
+    if title_stats["punct_ratio"] > 0.20 and (
+        title_stats["semicolon_count"] >= 2 or title_stats["dash_ratio"] > 0.04
+    ):
         return True
 
     return False
@@ -441,8 +499,9 @@ def _sqlite_row_to_result(
         "source_url": src,
         "source": src,
         "title": row["title"] or "",
-        "publisher": "",
-        "found_on": "",
+        "subset": row["subset_name"] or "",
+        "publisher": row["publisher"] if "publisher" in row.keys() else "",
+        "found_on": row["found_on"] if "found_on" in row.keys() else "",
         "text": txt,
         "snippet": txt[:1200],
         "snippet_html": _snippet_html_from_text(txt, max_words=600),
@@ -453,6 +512,67 @@ def _sqlite_row_to_result(
 
 
 # ------------------ HYBRID SQLITE SEARCH ------------------
+
+def _entity_positions(entity_term: str, text: str) -> List[int]:
+    surf = re.escape(entity_term.replace("_", " "))
+    return [m.start() for m in re.finditer(rf"\b{surf}\b", str(text or ""), flags=re.I)]
+
+
+def _has_entity_proximity_match(entity_terms: List[str], text: str, max_chars: int = 700) -> bool:
+    """
+    Require at least 2 distinct entity terms to appear near each other.
+    This helps block "same giant chunk, unrelated subtopics" junk.
+    """
+    s = str(text or "")[:2500]
+
+    present = []
+    for term in entity_terms:
+        pos = _entity_positions(term, s)
+        if pos:
+            present.append((term, pos))
+
+    if len(present) < 2:
+        return False
+
+    for i in range(len(present)):
+        for j in range(i + 1, len(present)):
+            for p1 in present[i][1]:
+                for p2 in present[j][1]:
+                    if abs(p1 - p2) <= max_chars:
+                        return True
+
+    return False
+
+
+def _has_early_anchor(entity_terms: List[str], title: str, text: str) -> bool:
+    """
+    At least one entity should show up in the title or early text.
+    Prevents deep-citation tangents from floating to the top.
+    """
+    title_low = str(title or "").lower()
+    early = str(text or "")[:600].lower()
+
+    for term in entity_terms:
+        surf = term.replace("_", " ").lower()
+        if surf in title_low or surf in early:
+            return True
+    return False
+
+
+def _generic_title_penalty(title: str) -> float:
+    """
+    Small penalty for ultra-generic titles.
+    Because 'WTK stops' is not exactly screaming relevance.
+    """
+    t = str(title or "").strip().lower()
+    if not t:
+        return 0.15
+    if t in {"wtk stops"}:
+        return 0.25
+    if len(t.split()) <= 2:
+        return 0.10
+    return 0.0
+
 
 def _hybrid_search_sqlite(
     state: RetrievalState,
@@ -574,7 +694,7 @@ def _hybrid_search_sqlite(
 
     ranked.sort(key=lambda x: x[1], reverse=True)
 
-    # Over-fetch before punctuation filtering so we still have enough survivors.
+    # Over-fetch before filtering so the filters can throw elbows without emptying the room.
     prefilter_limit = max(top_k * 5, 50)
     ranked = ranked[:prefilter_limit]
 
@@ -606,6 +726,8 @@ def _hybrid_search_sqlite(
 
     results = []
     dropped_noisy = 0
+    dropped_proximity = 0
+    dropped_anchor = 0
 
     for lookup_id, hybrid_score, entity_score, fulltext_score in ranked:
         row = meta_map.get(lookup_id)
@@ -619,27 +741,40 @@ def _hybrid_search_sqlite(
             dropped_noisy += 1
             continue
 
+        if len(entity_terms) >= 2:
+            if not _has_entity_proximity_match(entity_terms, fulltext_text, max_chars=700):
+                dropped_proximity += 1
+                continue
+
+        if entity_terms:
+            if not _has_early_anchor(entity_terms, title, fulltext_text):
+                dropped_anchor += 1
+                continue
+
+        adjusted_hybrid_score = hybrid_score - _generic_title_penalty(title)
+
         result = _sqlite_row_to_result(
             row,
-            hybrid_score,
+            adjusted_hybrid_score,
             entity_score,
             fulltext_score,
         )
 
-        # Handy extra fields for debugging / frontend console
-        result["hybrid_score"] = float(hybrid_score)
+        # Extra debug payload for frontend console / tuning
+        result["hybrid_score"] = float(adjusted_hybrid_score)
         result["entity_score"] = float(entity_score)
         result["fulltext_score"] = float(fulltext_score)
-        result["search_closeness"] = float(hybrid_score)
+        result["search_closeness"] = float(adjusted_hybrid_score)
         result["entity_query_used"] = entity_query or ""
         result["fulltext_query_used"] = fulltext_query_used or ""
+        result["subset"] = row["subset_name"] or ""
 
         results.append(result)
 
     results = results[:top_k]
 
     rag_logger.info(
-        "Hybrid search final. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d kept=%d dropped_noisy=%d",
+        "Hybrid search final. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d kept=%d dropped_noisy=%d dropped_proximity=%d dropped_anchor=%d",
         entity_terms,
         entity_query,
         fulltext_query_used,
@@ -647,6 +782,8 @@ def _hybrid_search_sqlite(
         len(fulltext_rows),
         len(results),
         dropped_noisy,
+        dropped_proximity,
+        dropped_anchor,
     )
 
     return results
@@ -1178,4 +1315,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
