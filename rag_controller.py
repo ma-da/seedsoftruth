@@ -431,6 +431,7 @@ def _looks_too_punct_noisy(title: str, text: str) -> bool:
         return True
 
     return False
+        
 
 # ------------------ RENDERING / RESULT HELPERS ------------------
 
@@ -493,15 +494,16 @@ def _sqlite_row_to_result(
 ) -> Dict[str, Any]:
     txt = str(row["fulltext_text"] or "")
     src = str(row["source_url"] or "").strip()
+    subset = str(row["subset_name"] or "").strip()
 
     return {
         "row_id": row["chunk_id"] or row["lookup_id"],
         "source_url": src,
         "source": src,
         "title": row["title"] or "",
-        "subset": row["subset_name"] or "",
-        "publisher": row["publisher"] if "publisher" in row.keys() else "",
-        "found_on": row["found_on"] if "found_on" in row.keys() else "",
+        "subset": subset,
+        "publisher": "",
+        "found_on": "",
         "text": txt,
         "snippet": txt[:1200],
         "snippet_html": _snippet_html_from_text(txt, max_words=600),
@@ -510,6 +512,44 @@ def _sqlite_row_to_result(
         "fulltext_score": float(fulltext_score),
     }
 
+def clean_rag_references(docs):
+    """
+    Clean references for frontend display only.
+    Do not use before context building / RAG.
+    """
+    cleaned = []
+
+    for doc in docs or []:
+        new_doc = dict(doc or {})
+
+        subset = str(new_doc.get("subset") or "").strip()
+        publisher = str(new_doc.get("publisher") or "").strip()
+        found_on = str(new_doc.get("found_on") or "").strip()
+
+        subset_low = subset.lower()
+
+        is_trineday = (
+            subset_low == "trine day"
+            or subset_low == "trineday"
+            or subset_low.startswith("trine day")
+            or subset_low.startswith("trineday")
+            or publisher == TRINEDAY_TOKEN
+            or found_on == TRINEDAY_TOKEN
+        )
+
+        if is_trineday:
+            # Force the visible subset label you want
+            new_doc["subset"] = "Trine Day"
+
+            # Replace display text only
+            protected = "This text is protected by copyright and cannot be displayed."
+            new_doc["text"] = protected
+            new_doc["snippet"] = protected
+            new_doc["snippet_html"] = protected
+
+        cleaned.append(new_doc)
+
+    return cleaned
 
 # ------------------ HYBRID SQLITE SEARCH ------------------
 
@@ -573,6 +613,78 @@ def _generic_title_penalty(title: str) -> float:
         return 0.10
     return 0.0
 
+def _tokenize_keywords(raw_query: str) -> List[str]:
+    return tokenize_fulltext_query(raw_query)
+
+
+def _build_phrase_query(raw_query: str) -> str:
+    """
+    Build an exact phrase query for longer pasted excerpts.
+    Returns empty string for very short queries.
+    """
+    q = str(raw_query or "").strip().lower()
+    q = re.sub(r"\s+", " ", q)
+    if len(q.split()) < 5:
+        return ""
+    return f'"{q}"'
+
+
+def _keyword_overlap_bonus(raw_query: str, title: str, text: str) -> float:
+    """
+    Bonus for literal keyword overlap in title + early text.
+    Helps excerpt search and named-term queries.
+    """
+    q_toks = _tokenize_keywords(raw_query)
+    if not q_toks:
+        return 0.0
+
+    title_low = str(title or "").lower()
+    text_low = str(text or "")[:3000].lower()
+
+    hits_title = 0
+    hits_text = 0
+
+    for tok in q_toks:
+        if tok in title_low:
+            hits_title += 1
+        if tok in text_low:
+            hits_text += 1
+
+    return (0.22 * hits_title) + (0.05 * hits_text)
+
+
+def _exact_phrase_bonus(raw_query: str, title: str, text: str) -> float:
+    """
+    Bonus for exact phrase matches and long subphrase matches.
+    This is the secret sauce for pasted excerpts.
+    """
+    q = str(raw_query or "").strip().lower()
+    q = re.sub(r"\s+", " ", q)
+
+    if len(q) < 20:
+        return 0.0
+
+    title_low = str(title or "").lower()
+    text_low = str(text or "")[:5000].lower()
+
+    # Full exact phrase
+    if q in title_low:
+        return 1.25
+    if q in text_low:
+        return 1.0
+
+    # Subphrase fallback
+    words = q.split()
+    for span in (10, 8, 7, 6, 5):
+        if len(words) >= span:
+            for i in range(len(words) - span + 1):
+                phrase = " ".join(words[i:i+span])
+                if phrase in title_low:
+                    return 0.8
+                if phrase in text_low:
+                    return 0.55
+
+    return 0.0
 
 def _hybrid_search_sqlite(
     state: RetrievalState,
@@ -590,9 +702,14 @@ def _hybrid_search_sqlite(
         require_all=require_all_entities,
     )
 
-    strict_fulltext_query = build_fulltext_query(fulltext_query, require_all=True)
-    broad_fulltext_query = build_fulltext_query(fulltext_query, require_all=False)
+    raw_ft_query = str(fulltext_query or "").strip()
+    phrase_fulltext_query = _build_phrase_query(raw_ft_query)
+    strict_fulltext_query = build_fulltext_query(raw_ft_query, require_all=True)
+    broad_fulltext_query = build_fulltext_query(raw_ft_query, require_all=False)
 
+    # ----------------------------
+    # 1) Entity search
+    # ----------------------------
     entity_rows = []
     if entity_query:
         entity_rows = list(
@@ -608,10 +725,33 @@ def _hybrid_search_sqlite(
             )
         )
 
+    # ----------------------------
+    # 2) Fulltext search
+    # Search order:
+    #   a) exact phrase for long excerpt-like queries
+    #   b) strict AND
+    #   c) broad OR
+    # ----------------------------
     fulltext_rows = []
     fulltext_query_used = ""
 
-    if strict_fulltext_query:
+    if phrase_fulltext_query:
+        fulltext_rows = list(
+            cur.execute(
+                """
+                SELECT rowid AS lookup_id, bm25(fulltext_fts) AS bm25_score
+                FROM fulltext_fts
+                WHERE fulltext_fts MATCH ?
+                ORDER BY bm25_score
+                LIMIT ?
+                """,
+                (phrase_fulltext_query, HYBRID_FULLTEXT_LIMIT),
+            )
+        )
+        if fulltext_rows:
+            fulltext_query_used = phrase_fulltext_query
+
+    if not fulltext_rows and strict_fulltext_query:
         fulltext_rows = list(
             cur.execute(
                 """
@@ -624,7 +764,8 @@ def _hybrid_search_sqlite(
                 (strict_fulltext_query, HYBRID_FULLTEXT_LIMIT),
             )
         )
-        fulltext_query_used = strict_fulltext_query
+        if fulltext_rows:
+            fulltext_query_used = strict_fulltext_query
 
     if (
         not fulltext_rows
@@ -643,8 +784,12 @@ def _hybrid_search_sqlite(
                 (broad_fulltext_query, HYBRID_FULLTEXT_LIMIT),
             )
         )
-        fulltext_query_used = broad_fulltext_query
+        if fulltext_rows:
+            fulltext_query_used = broad_fulltext_query
 
+    # ----------------------------
+    # 3) Merge branch scores
+    # ----------------------------
     merged: Dict[int, Dict[str, float]] = {}
 
     for row in entity_rows:
@@ -677,12 +822,16 @@ def _hybrid_search_sqlite(
             score,
         )
 
+    # ----------------------------
+    # 4) Initial ranking
+    # ----------------------------
     ranked = []
     for lookup_id, parts in merged.items():
         hybrid_score = (
             HYBRID_ENTITY_WEIGHT * parts["entity_score"]
             + HYBRID_FULLTEXT_WEIGHT * parts["fulltext_score"]
         )
+
         ranked.append(
             (
                 lookup_id,
@@ -694,8 +843,10 @@ def _hybrid_search_sqlite(
 
     ranked.sort(key=lambda x: x[1], reverse=True)
 
-    # Over-fetch before filtering so the filters can throw elbows without emptying the room.
-    prefilter_limit = max(top_k * 5, 50)
+    # Pull a bigger pool before filtering/bonuses.
+    # Otherwise the good excerpt matches may never get their turn on stage.
+    prefilter_limit = max(top_k * 20, 200)
+    prefilter_limit = min(prefilter_limit, 2000)
     ranked = ranked[:prefilter_limit]
 
     if not ranked:
@@ -724,7 +875,10 @@ def _hybrid_search_sqlite(
     )
     meta_map = {int(r["lookup_id"]): r for r in meta_rows}
 
-    results = []
+    # ----------------------------
+    # 5) Post-filter + score bonuses
+    # ----------------------------
+    rescored = []
     dropped_noisy = 0
     dropped_proximity = 0
     dropped_anchor = 0
@@ -751,7 +905,42 @@ def _hybrid_search_sqlite(
                 dropped_anchor += 1
                 continue
 
-        adjusted_hybrid_score = hybrid_score - _generic_title_penalty(title)
+        keyword_bonus = _keyword_overlap_bonus(raw_ft_query, title, fulltext_text)
+        phrase_bonus = _exact_phrase_bonus(raw_ft_query, title, fulltext_text)
+
+        adjusted_hybrid_score = (
+            hybrid_score
+            - _generic_title_penalty(title)
+            + keyword_bonus
+            + phrase_bonus
+        )
+
+        rescored.append(
+            (
+                lookup_id,
+                adjusted_hybrid_score,
+                entity_score,
+                fulltext_score,
+                keyword_bonus,
+                phrase_bonus,
+            )
+        )
+
+    rescored.sort(key=lambda x: x[1], reverse=True)
+    rescored = rescored[:top_k]
+
+    results = []
+    for (
+        lookup_id,
+        adjusted_hybrid_score,
+        entity_score,
+        fulltext_score,
+        keyword_bonus,
+        phrase_bonus,
+    ) in rescored:
+        row = meta_map.get(lookup_id)
+        if row is None:
+            continue
 
         result = _sqlite_row_to_result(
             row,
@@ -760,18 +949,18 @@ def _hybrid_search_sqlite(
             fulltext_score,
         )
 
-        # Extra debug payload for frontend console / tuning
+        # Debug goodies for console / tuning
         result["hybrid_score"] = float(adjusted_hybrid_score)
         result["entity_score"] = float(entity_score)
         result["fulltext_score"] = float(fulltext_score)
+        result["keyword_bonus"] = float(keyword_bonus)
+        result["phrase_bonus"] = float(phrase_bonus)
         result["search_closeness"] = float(adjusted_hybrid_score)
         result["entity_query_used"] = entity_query or ""
         result["fulltext_query_used"] = fulltext_query_used or ""
         result["subset"] = row["subset_name"] or ""
 
         results.append(result)
-
-    results = results[:top_k]
 
     rag_logger.info(
         "Hybrid search final. entity_terms=%s entity_query=%s fulltext_query_used=%s entity_hits=%d fulltext_hits=%d kept=%d dropped_noisy=%d dropped_proximity=%d dropped_anchor=%d",
@@ -1292,18 +1481,6 @@ def outgoing_queue_len():
         return len(outgoing_queue)
 
 
-def clean_rag_references(docs):
-    cleaned = []
-    for doc in docs:
-        if doc.get("publisher") == TRINEDAY_TOKEN or doc.get("found_on") == TRINEDAY_TOKEN:
-            new_doc = dict(doc)
-            new_doc["text"] = COPYRIGHT_BLOCK_MSG
-            new_doc["snippet"] = COPYRIGHT_BLOCK_MSG
-            cleaned.append(new_doc)
-        else:
-            cleaned.append(doc)
-    return cleaned
-
 
 # ------------------ MAIN ------------------
 
@@ -1315,5 +1492,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
