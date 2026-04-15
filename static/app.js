@@ -7,8 +7,8 @@
    ========================================================= */
 const CFG = {
   // Version Info,
-  VERSION_NUM: "0.2",
-  VERSION_NAME: "Bunny",
+  VERSION_NUM: "0.9",
+  VERSION_NAME: "Chinchilla",
 
   // LocalStorage keys
   LS_THEME: 'sot-theme',
@@ -1857,26 +1857,27 @@ async function handleChatSubmit(e) {
         appendMessage(bot, 'bot');
         pushTurn(text, bot);
 
-		const refs = (Array.isArray(data.results) ? data.results : [])
+		const refs = (Array.isArray(data.references) ? data.references : [])
 		  .slice(0, CFG.MAX_REFS)
 		  .map((r) => ({
 			title: r.title || r.source_title || r.filename || 'Reference',
 
-			// New preferred fields:
+			// Link target
 			source_url: r.source_url || r.url || r.link || "",
 			publisher: r.publisher || r.publication || r.source || "Corpus",
 			found_on: r.found_on || "",
 
-			// Snippet: prefer html if provided, else plain
+			// Snippet
 			snippet_html: r.snippet_html || "",
 			snippet: r.snippet || r.text || r.excerpt || "",
 
-			// Optional extras (harmless if absent)
+			// Optional extras
 			date: r.date || r.Date || "",
-			dataset: r.dataset || ""
+			dataset: r.dataset || "",
+			subset: r.subset || ""
 		  }));
 
-        setReferences(refs);
+		setReferences(refs);
       } catch (err) {
         console.error('[Search] apiSearch failed:', err);
         appendMessage('Search request failed (dev). Check server logs.', 'bot');
