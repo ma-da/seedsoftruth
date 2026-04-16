@@ -805,7 +805,8 @@ def _hybrid_search_sqlite(
     for row in entity_rows:
         lookup_id = int(row["lookup_id"])
         raw_score = _fts_positive_score_simple(row["bm25_score"])
-        score = _fts_positive_score(row["bm25_score"])
+        score = _fts_positive_score_simple(row["bm25_score"])
+        #score = _fts_positive_score(row["bm25_score"])
         merged.setdefault(
             lookup_id,
             {
@@ -826,7 +827,8 @@ def _hybrid_search_sqlite(
     for row in fulltext_rows:
         lookup_id = int(row["lookup_id"])
         raw_score = _fts_positive_score_simple(row["bm25_score"])
-        score = _fts_positive_score(row["bm25_score"])
+        score = _fts_positive_score_simple(row["bm25_score"])
+        #score = _fts_positive_score(row["bm25_score"])
         merged.setdefault(
             lookup_id,
             {
