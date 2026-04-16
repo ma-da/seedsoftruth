@@ -1080,6 +1080,21 @@ body.light .tools-button--inset:hover{
   min-width: 0;
 }
 
+.tools-row--stack{
+  display: block;
+  gap: 14px;
+}
+
+.tools-row--stack .tools-row-text{
+  margin-bottom: 8px;
+}
+
+.tools-select--full{
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
 .tools-row-label{
   font-size: 13px;
   font-weight: 600;
@@ -2449,6 +2464,7 @@ body.sidebar-collapsed .sidebar-open-btn{
 
   .overlay.visible{ display: block; }
 }
+
 
 
 
