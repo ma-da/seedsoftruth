@@ -49,6 +49,10 @@ const CFG = {
 
   // Error codes
   JOB_ID_NONE: "none",
+
+  // Developer mode
+  // Should only be set to true locally, check-in as false
+  DEV_MODE: false,
 };
 
 const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
@@ -90,6 +94,35 @@ function clamp1to10(n) {
   const x = parseInt(n, 10);
   if (Number.isNaN(x)) return null;
   return Math.max(1, Math.min(10, x));
+}
+
+/**
+ * Formats a score safely. Handles numbers and strings.
+ * - Integers → "85"
+ * - Floats  → "85.35" (2 decimal places)
+ * - Invalid → "" (empty string) or fallback value
+ */
+function formatScore(score) {
+  // Handle null, undefined, or empty
+  if (score == null || score === '') {
+    return '';
+  }
+
+  // Convert string to number if needed
+  const num = typeof score === 'string' ? parseFloat(score) : Number(score);
+
+  // If it's not a valid number
+  if (isNaN(num)) {
+    return '';
+  }
+
+  // Check if it's an integer
+  if (Number.isInteger(num)) {
+    return num.toString();
+  }
+
+  // It's a float → format to 2 decimal places
+  return num.toFixed(2);
 }
 
 function safeJsonParse(str, fallback) {
@@ -1365,6 +1398,19 @@ function setReferences(refs) {
       String(ref?.dataset || '').trim() ||
       'Unknown';
 
+    // References scoring info only displayed when dev_mode is true
+    var scoringLabel = null;
+    var scoringLabelTxt = "";
+    if (CFG.DEV_MODE) {
+        scoringLabelTxt = " BM25: " + formatScore(ref?.score_bm25) +
+                          ", entity_score: " + formatScore(ref?.entity_score) +
+                          ", fulltext_score: " + formatScore(ref?.fulltext_score);
+        scoringLabel = document.createElement('div');
+        scoringLabel.className = "scoring-label";
+        scoringLabel.textContent = scoringLabelTxt;
+    } else {
+    }
+
     const hrefRaw = (
       String(ref?.source_url || '').trim() ||
       String(ref?.source || '').trim()
@@ -1389,6 +1435,11 @@ function setReferences(refs) {
 
     left.appendChild(foundEl);
     console.log('foundEl tag=', href ? 'a' : 'span', 'hrefRaw=', hrefRaw, 'href=', href);
+
+    // Scoring only displayed in dev mode
+    if (scoringLabel !== null) {
+        left.appendChild(scoringLabel);
+    }
 
     const cbtn = document.createElement('button');
     cbtn.type = 'button';
@@ -1649,8 +1700,9 @@ async function clearCurrentChat() {
    15) FLASK API HELPERS (session cookie enabled)
    ========================================================= */
 async function apiPost(url, payload) {
-  // TODO: Remove for prod
-  console.log("API POST to url: " + url)
+  if (CFG.DEV_MODE) {
+    console.log("API POST to url: " + url)
+  }
 
   const res = await fetch(url, {
     method: 'POST',
@@ -1874,7 +1926,10 @@ async function handleChatSubmit(e) {
 			// Optional extras
 			date: r.date || r.Date || "",
 			dataset: r.dataset || "",
-			subset: r.subset || ""
+			subset: r.subset || "",
+			score_bm25: r.score_bm25 || "",
+			entity_score: r.entity_score || "",
+			fulltext_score: r.fulltext_score || "",
 		  }));
 
 		setReferences(refs);
