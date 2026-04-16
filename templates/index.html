@@ -67,7 +67,7 @@
       <div class="sidebar-scroll">
         <!-- Status -->
         <div>
-          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-trineday-mini-llama3-70b-lora-v7" target="_blank">Model v7</a>, <a href="https://github.com/ma-da/seedsoftruth/tree/main/data/trineday_mini" target="_blank">Trineday Mini dataset</a></div> 
+          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-trineday-mini-llama3-70b-lora-v7" target="_blank">Model v9</a>, <a href="https://github.com/ma-da/seedsoftruth/tree/main/data/trineday_mini" target="_blank">Dataset Gamma</a></div> 
 
           <div class="status-panel">
             <div class="status-row">
@@ -159,7 +159,8 @@
             <div class="welcome-sub">
               <ol><li>Click the lock icon at top right and enter your password</li>
 			  <li>Select mode by clicking on the plus sign in chat area</li>
-			  <li>Submit feedback about any answer/reference by clicking on the top right of any message area</li></ol>
+			  <li>Submit feedback about any answer/reference by clicking on the top right of any message area</li>
+			  <li>Note that the AI model can take up to 5 minutes to wake up if it's sleeping when you ask your first question</li></ol>			  
             </div>
           </div>
 
@@ -240,7 +241,7 @@
 
 					<label class="tools-label" for="history-slider">
 					  Previous questions remembered
-					  <span class="tools-value" id="history-value">2</span>
+					  <span class="tools-value" id="history-value">3</span>
 					</label>
 
 					<input
@@ -250,7 +251,7 @@
 					  min="0"
 					  max="5"
 					  step="1"
-					  value="2"
+					  value="3"
 					/>
 
 					<div class="tools-help">
@@ -283,6 +284,22 @@
 						  <label for="rag-toggle" class="toggle-track" aria-label="Toggle RAG"></label>
 						</div>
 					  </div>
+					<div class="tools-divider" aria-hidden="true"></div>
+						<div class="tools-row tools-row--stack">
+
+						  <select
+							id="search-group"
+							class="tools-select tools-select--full"
+							aria-describedby="search-group-help"
+						  >
+							<option value="WantToKnow">WantToKnow</option>
+							<option value="Deep Politics" selected>Deep Politics</option>
+							<option value="Health">Health</option>
+							<option value="UFO">UFO</option>
+							<option value="Books">Books</option>
+							<option value="Everything">Everything</option>
+						  </select>
+						</div>
 					</div>				  
 				  
 				</div>
