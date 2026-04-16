@@ -26,7 +26,7 @@ const CFG = {
 
   // UI behavior
   DEFAULT_THEME: 'light',      // 'light' | 'dark'
-  DEFAULT_HISTORY_TURNS: 2,    // 0..5
+  DEFAULT_HISTORY_TURNS: 3,    // 0..5
   DEFAULT_MODE: 'chat',        // 'search' | 'chat' | 'ab'
   TEXTAREA_MAX_HEIGHT: 140,    // px
 
@@ -57,6 +57,49 @@ const CFG = {
 
 const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
 
+const SUBSET_COMBOS = [
+  {
+    combo_name: "WantToKnow",
+    subsets: ["WTK Archive", "WantToKnow.info"]
+  },
+  {
+    combo_name: "Deep Politics",
+    subsets: ["WTK Archive", "WantToKnow.info", "theblackvault.com", "Trine Day"]
+  },
+  {
+    combo_name: "Health",
+    subsets: [
+      "WTK Archive", "WantToKnow.info", "childrenshealthdefense.org",
+      "usrtk.org", "vaccinepapers.org", "howdovaccinescauseautism.org"
+    ]
+  },
+  {
+    combo_name: "UFO",
+    subsets: [
+      "WTK Archive", "WantToKnow.info", "childrenshealthdefense.org",
+      "usrtk.org", "vaccinepapers.org", "howdovaccinescauseautism.org"
+    ]
+  },
+  {
+    combo_name: "Books",
+    subsets: ["Misc Ebook", "Trine Day"]
+  },
+  {
+    combo_name: "Everything",
+    subsets: [
+      "Misc Ebook", "Trine Day", "WTK Archive", "WantToKnow.info",
+      "arlingtoninstitute.org", "blog.maryannedemasi.com",
+      "childrenshealthdefense.org", "doortofreedom.org",
+      "howdovaccinescauseautism.org", "jeremyrhammond.com",
+      "judicialwatch.org", "learntherisk.org", "martintruther.com",
+      "newparadigminstitute.org", "nypost.com", "organicconsumers.org",
+      "substack", "theblackvault.com", "thepulse.one",
+      "trialsitenews.com", "usrtk.org", "vaccinepapers.org",
+      "wingmakers.com"
+    ]
+  }
+];
+
 /* =========================================================
    1) DOM LOOKUPS (set in init)
    ========================================================= */
@@ -68,6 +111,8 @@ const els = {}; // populated in initDom()
 const toolState = {
   historyTurns: CFG.DEFAULT_HISTORY_TURNS,
   mode: CFG.DEFAULT_MODE,
+  useRag: true,
+  searchGroup: 'Deep Politics',  
   modelType: "hf"
 };
 
@@ -242,6 +287,12 @@ async function typeIntoElement(textEl, fullText, opts = {}) {
   // Remove cursor when done
   cursor.remove();
   scrollChatToBottom?.();
+}
+
+/*------ SUBSET COMBO HELPER------------------*/
+function getSubsetsForCombo(comboName) {
+  const combo = SUBSET_COMBOS.find(c => c.combo_name === comboName);
+  return combo ? combo.subsets : [];
 }
 /*------ MARKDOWN HELPER------------------*/
 
@@ -1860,8 +1911,9 @@ async function handleChatSubmit(e) {
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
     context: contextTurns,
-	use_rag: !!toolState.useRag,
-	model_type
+    use_rag: !!toolState.useRag,
+    subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : [],
+    model_type
   };
 
   // Start “busy” immediately so the user gets feedback right away
@@ -1889,7 +1941,8 @@ async function handleChatSubmit(e) {
         mode: 'search',
         history_turns: toolState.historyTurns,
         context: contextTurns,
-		use_rag: !!toolState.useRag
+        use_rag: !!toolState.useRag,
+        subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : []
       };
 
       console.log('[Search → Flask] payload:', searchPayload);
