@@ -52,7 +52,7 @@ const CFG = {
 
   // Developer mode
   // Should only be set to true locally, check-in as false
-  DEV_MODE: false,
+  DEV_MODE: true,
 };
 
 const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
@@ -1404,7 +1404,8 @@ function setReferences(refs) {
     if (CFG.DEV_MODE) {
         scoringLabelTxt = " BM25: " + formatScore(ref?.score_bm25) +
                           ", entity_score: " + formatScore(ref?.entity_score) +
-                          ", fulltext_score: " + formatScore(ref?.fulltext_score);
+                          ", fulltext_score: " + formatScore(ref?.fulltext_score) +
+                          ", raw_score: " + formatScore(ref?.raw_score);
         scoringLabel = document.createElement('div');
         scoringLabel.className = "scoring-label";
         scoringLabel.textContent = scoringLabelTxt;
@@ -1930,6 +1931,7 @@ async function handleChatSubmit(e) {
 			score_bm25: r.score_bm25 || "",
 			entity_score: r.entity_score || "",
 			fulltext_score: r.fulltext_score || "",
+			raw_score: r.raw_score || "",
 		  }));
 
 		setReferences(refs);

@@ -485,12 +485,16 @@ def _fts_positive_score(bm25_score: float) -> float:
     # We convert it into a polite positive score instead of pretending all scores are identical.
     return 1.0 / (1.0 + abs(float(bm25_score)))
 
+def _fts_positive_score_simple(bm25_score: float) -> float:
+    # FTS5 bm25 has negative scores as better, just invert it
+    return -float(bm25_score)
 
 def _sqlite_row_to_result(
     row: sqlite3.Row,
     hybrid_score: float,
     entity_score: float,
     fulltext_score: float,
+    raw_score: float,
 ) -> Dict[str, Any]:
     txt = str(row["fulltext_text"] or "")
     src = str(row["source_url"] or "").strip()
@@ -510,6 +514,7 @@ def _sqlite_row_to_result(
         "score_bm25": float(hybrid_score),
         "entity_score": float(entity_score),
         "fulltext_score": float(fulltext_score),
+        "raw_score": float(raw_score),
     }
 
 def clean_rag_references(docs):
@@ -707,6 +712,11 @@ def _hybrid_search_sqlite(
     strict_fulltext_query = build_fulltext_query(raw_ft_query, require_all=True)
     broad_fulltext_query = build_fulltext_query(raw_ft_query, require_all=False)
 
+    rag_logger.info(f"raw_ft_query {raw_ft_query}")
+    rag_logger.info(f"phrase_fulltext_query {phrase_fulltext_query}")
+    rag_logger.info(f"strict_fulltext_query {strict_fulltext_query}")
+    rag_logger.info(f"broad_fulltext_query {broad_fulltext_query}")
+
     # ----------------------------
     # 1) Entity search
     # ----------------------------
@@ -794,32 +804,44 @@ def _hybrid_search_sqlite(
 
     for row in entity_rows:
         lookup_id = int(row["lookup_id"])
+        raw_score = _fts_positive_score_simple(row["bm25_score"])
         score = _fts_positive_score(row["bm25_score"])
         merged.setdefault(
             lookup_id,
             {
                 "entity_score": 0.0,
                 "fulltext_score": 0.0,
+                "raw_score": 0.0,
             },
         )
         merged[lookup_id]["entity_score"] = max(
             merged[lookup_id]["entity_score"],
             score,
         )
+        merged[lookup_id]["raw_score"] = max(
+            merged[lookup_id]["raw_score"],
+            raw_score,
+        )
 
     for row in fulltext_rows:
         lookup_id = int(row["lookup_id"])
+        raw_score = _fts_positive_score_simple(row["bm25_score"])
         score = _fts_positive_score(row["bm25_score"])
         merged.setdefault(
             lookup_id,
             {
                 "entity_score": 0.0,
                 "fulltext_score": 0.0,
+                "raw_score": 0.0,
             },
         )
         merged[lookup_id]["fulltext_score"] = max(
             merged[lookup_id]["fulltext_score"],
             score,
+        )
+        merged[lookup_id]["raw_score"] = max(
+            merged[lookup_id]["raw_score"],
+            raw_score,
         )
 
     # ----------------------------
@@ -838,6 +860,7 @@ def _hybrid_search_sqlite(
                 hybrid_score,
                 parts["entity_score"],
                 parts["fulltext_score"],
+                parts["raw_score"],
             )
         )
 
@@ -883,7 +906,7 @@ def _hybrid_search_sqlite(
     dropped_proximity = 0
     dropped_anchor = 0
 
-    for lookup_id, hybrid_score, entity_score, fulltext_score in ranked:
+    for lookup_id, hybrid_score, entity_score, fulltext_score, raw_score in ranked:
         row = meta_map.get(lookup_id)
         if row is None:
             continue
@@ -923,6 +946,7 @@ def _hybrid_search_sqlite(
                 fulltext_score,
                 keyword_bonus,
                 phrase_bonus,
+                raw_score,
             )
         )
 
@@ -937,6 +961,7 @@ def _hybrid_search_sqlite(
         fulltext_score,
         keyword_bonus,
         phrase_bonus,
+        raw_score,
     ) in rescored:
         row = meta_map.get(lookup_id)
         if row is None:
@@ -947,6 +972,7 @@ def _hybrid_search_sqlite(
             adjusted_hybrid_score,
             entity_score,
             fulltext_score,
+            raw_score,
         )
 
         # Debug goodies for console / tuning
@@ -959,6 +985,7 @@ def _hybrid_search_sqlite(
         result["entity_query_used"] = entity_query or ""
         result["fulltext_query_used"] = fulltext_query_used or ""
         result["subset"] = row["subset_name"] or ""
+        result["raw_score"] = float(raw_score)
 
         results.append(result)
 
