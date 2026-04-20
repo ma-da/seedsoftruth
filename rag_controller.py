@@ -933,12 +933,17 @@ def _hybrid_search_sqlite(
         keyword_bonus = _keyword_overlap_bonus(raw_ft_query, title, fulltext_text)
         phrase_bonus = _exact_phrase_bonus(raw_ft_query, title, fulltext_text)
 
+        title_penalty = min(-_generic_title_penalty(title), 0)
+
         adjusted_hybrid_score = (
             hybrid_score
             - _generic_title_penalty(title)
             + keyword_bonus
             + phrase_bonus
         )
+
+        # DEBUG ONLY
+        rag_logger.info(f"lookup idx: {lookup_id}, adjusted_hybrid_score: {adjusted_hybrid_score}, hybrid_score: {hybrid_score}, raw_score: {raw_score}, title_penalty {title_penalty}, keyword_bonus: {keyword_bonus}, phrase_bonus: {phrase_bonus}")
 
         rescored.append(
             (
@@ -1033,6 +1038,7 @@ async def search_references(
         fulltext_query=fulltext_source,
         top_k=int(top_k),
         require_all_entities=True if entity_terms else False,
+        subsets=subsets,
     )
 
     return {
