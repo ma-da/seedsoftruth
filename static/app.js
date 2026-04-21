@@ -76,8 +76,8 @@ const SUBSET_COMBOS = [
   {
     combo_name: "UFO",
     subsets: [
-      "WTK Archive", "WantToKnow.info", "childrenshealthdefense.org",
-      "usrtk.org", "vaccinepapers.org", "howdovaccinescauseautism.org"
+      "WTK Archive", "WantToKnow.info", "theblackvault.com",
+      "newparadigminstitute.org"
     ]
   },
   {
@@ -113,7 +113,7 @@ const toolState = {
   mode: CFG.DEFAULT_MODE,
   useRag: true,
   searchGroup: 'Deep Politics',  
-  modelType: "hf"
+  modelType: "spark"
 };
 
 // client-side turns: { user: string, assistant: string }
@@ -565,6 +565,9 @@ function loadToolState() {
     } else if (typeof toolState.useRag !== 'boolean') {
       toolState.useRag = true;
     }
+    if (typeof parsed.searchGroup === 'string') {
+      toolState.searchGroup = parsed.searchGroup;
+    }	
   } catch (_) {}
 }
 
@@ -615,6 +618,9 @@ function renderToolState() {
       ? 'Uses retrieved context (RAG) to ground responses.'
       : 'Model-only: skips retrieval, but still uses conversation memory.';
   }
+  if (els.searchGroup) {
+    els.searchGroup.value = toolState.searchGroup;
+  }  
 }
 
 function initToolsPopup() {
@@ -690,6 +696,17 @@ function initToolsPopup() {
   if (modelSelect && toolState.modelType) {
     modelSelect.value = toolState.modelType;
   }
+  // Search groups change
+  if (els.searchGroup) {
+    els.searchGroup.addEventListener('change', () => {
+      toolState.searchGroup = els.searchGroup.value;
+      saveToolState();
+
+      if (typeof pushStatusMessage === 'function') {
+        pushStatusMessage(`Search group: ${toolState.searchGroup}`);
+      }
+    });
+  }  
 }
 
 // Model selection
@@ -1902,7 +1919,7 @@ async function handleChatSubmit(e) {
   const contextTurns = getContextTurns(toolState.historyTurns);
 
   // Define model type
-  const model_type = toolState.modelType || "hf";
+  const model_type = toolState.modelType || "spark";
 
   // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
@@ -2453,6 +2470,7 @@ function initDom() {
   els.historyHelpN = document.getElementById('history-help-n');
   els.modeHelp = document.getElementById('mode-help');
   els.modeRadios = Array.from(document.querySelectorAll('input[name="mode"]'));
+  els.searchGroup = document.getElementById('search-group');
 
   // status panel
   els.endpointDot = document.getElementById('endpoint-dot');
