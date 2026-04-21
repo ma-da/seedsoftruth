@@ -121,6 +121,7 @@ class QueuedJob:
     job_id: str
     model_type: str
     prompt: str
+    subsets: List[str]
 
 
 @dataclass_json
@@ -698,6 +699,7 @@ def _hybrid_search_sqlite(
     fulltext_query: str,
     top_k: int,
     require_all_entities: bool = True,
+    subsets: List[str] = None,
 ) -> List[Dict[str, Any]]:
     conn = _get_sqlite_conn(state)
     cur = conn.cursor()
@@ -712,10 +714,10 @@ def _hybrid_search_sqlite(
     strict_fulltext_query = build_fulltext_query(raw_ft_query, require_all=True)
     broad_fulltext_query = build_fulltext_query(raw_ft_query, require_all=False)
 
-    rag_logger.info(f"raw_ft_query {raw_ft_query}")
-    rag_logger.info(f"phrase_fulltext_query {phrase_fulltext_query}")
-    rag_logger.info(f"strict_fulltext_query {strict_fulltext_query}")
-    rag_logger.info(f"broad_fulltext_query {broad_fulltext_query}")
+    rag_logger.info(f"raw_ft_query: {raw_ft_query}")
+    rag_logger.info(f"phrase_fulltext_query: {phrase_fulltext_query}")
+    rag_logger.info(f"strict_fulltext_query: {strict_fulltext_query}")
+    rag_logger.info(f"broad_fulltext_query: {broad_fulltext_query}")
 
     # ----------------------------
     # 1) Entity search
@@ -888,16 +890,26 @@ def _hybrid_search_sqlite(
     ids = [r[0] for r in ranked]
     placeholders = ",".join("?" for _ in ids)
 
-    meta_rows = list(
-        cur.execute(
-            f"""
-            SELECT lookup_id, chunk_id, title, subset_name, domain, fulltext_text, source_url
-            FROM chunks
-            WHERE lookup_id IN ({placeholders})
-            """,
-            ids,
-        )
-    )
+    query = f"""
+        SELECT lookup_id, chunk_id, title, subset_name, domain, fulltext_text, source_url
+        FROM chunks
+        WHERE lookup_id IN ({placeholders})
+    """
+
+    if not ids:
+        return [{}]
+    params = list(ids)
+
+    # --- optional subset filter ---
+    if subsets and len(subsets) > 0:
+        subset_placeholders = ",".join("?" for _ in subsets)
+        query += f" AND subset_name IN ({subset_placeholders})"
+        params.extend(subsets)
+        rag_logger.info(f"Subsets used in hybrid_search: {subsets}")
+    else:
+        rag_logger.info("No Subsets used in hybrid_search")
+
+    meta_rows = list(cur.execute(query, params))
     meta_map = {int(r["lookup_id"]): r for r in meta_rows}
 
     # ----------------------------
@@ -937,7 +949,7 @@ def _hybrid_search_sqlite(
 
         adjusted_hybrid_score = (
             hybrid_score
-            - _generic_title_penalty(title)
+            + title_penalty
             + keyword_bonus
             + phrase_bonus
         )
@@ -1020,6 +1032,7 @@ async def search_references(
     verbose: bool = False,
     entity_source_query: Optional[str] = None,
     fulltext_query: Optional[str] = None,
+    subsets: List[str] = None,
     **_unused,
 ) -> Dict[str, Any]:
     q = (query or "").strip()
@@ -1030,7 +1043,7 @@ async def search_references(
     fulltext_source = (fulltext_query or q).strip()
 
     entity_terms = extract_canonical_entity_terms(entity_source, state)
-    rag_logger.info("search_references entity_terms=%s", entity_terms)
+    rag_logger.info(f"search_references entity_terms={entity_terms}, subsets={subsets}")
 
     results = _hybrid_search_sqlite(
         state,
@@ -1351,6 +1364,7 @@ async def ask(
     top_k: int = 10,
     verbose: bool = True,
     use_double_prompt: bool = False,
+    subsets: List[str] = None,
 ) -> str:
     model_adaptor_name = model_adaptor.name()
     rag_logger.info(f"ask() using '{model_adaptor_name}': {question[:80]}...")
@@ -1358,7 +1372,7 @@ async def ask(
     q, truncated = truncate_question(question)
 
     t0 = time.time()
-    refs = await search_references(state, q, top_k=top_k, verbose=verbose)
+    refs = await search_references(state, q, top_k=top_k, verbose=verbose, subsets=subsets)
     docs = refs.get("results", [])
     context = build_context_improved(docs, q, context_k=context_k)
     rag_logger.info(f"chat search_references results: {docs}")
@@ -1386,7 +1400,7 @@ async def ask(
 
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
-    answer = model_adaptor.generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = model_adaptor.generate(prompt, temperature=model_adapters.DEFAULT_TEMPERATURE, max_new_tokens=model_adapters.DEFAULT_MAX_TOKENS)
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer
@@ -1446,8 +1460,8 @@ inflight_users = {}
 inflight_lock = threading.Lock()
 
 
-def queue_job(user_id, job_id, msg, prompt) -> bool:
-    queued_job = QueuedJob(user_id, job_id, msg, prompt)
+def queue_job(user_id, job_id, msg, prompt, subsets: List[str]) -> int:
+    queued_job = QueuedJob(user_id, job_id, msg, prompt, subsets)
     with job_lock:
         job_queue.append(queued_job)
         return len(job_queue)

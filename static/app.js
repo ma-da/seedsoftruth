@@ -1921,6 +1921,9 @@ async function handleChatSubmit(e) {
   // Define model type
   const model_type = toolState.modelType || "spark";
 
+  // DEBUG ONLY
+  console.log("SUBSETS: " + toolState.searchGroup);
+
   // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
     user_id: userId,

@@ -49,7 +49,7 @@ import inspect
 import utils
 
 import db
-from rag_controller import ENABLE_MIN_GATING
+from rag_controller import ENABLE_MIN_GATING, rag_logger
 
 
 # ------------------ Logging ------------------
@@ -228,7 +228,7 @@ def worker_body():
 
         try:
             app_logger.info(f"Worker chat_with_corpus for model_type {queued_job.model_type} job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
-            answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT)
+            answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT, subsets=queued_job.subsets)
 
             # clean up docs of copyrighted material
             cleaned_docs = rag_controller.clean_rag_references(docs)
@@ -355,7 +355,10 @@ app_logger.info(f"Python version: {platform.python_version()}")
 
 # ------------------ Shared search/chat functions ------------------
 
-def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
+def search_corpus(query: str,
+                  top_k: int,
+                  shard_k: int = 20,
+                  subsets: List[str] = None) -> Dict[str, Any]:
     """
     Retrieval-only search using rag_controller.search_references(state,...).
 
@@ -380,6 +383,7 @@ def search_corpus(query: str, top_k: int, shard_k: int = 20) -> Dict[str, Any]:
             top_k=int(top_k),
             centroid_k=int(shard_k),
             verbose=False,
+            subsets=subsets,
         )
 
     out = utils.do_async_to_sync(_run)() or {}
@@ -430,7 +434,14 @@ def ask_corpus(question: str) -> str:
     return (ans or "").strip()
 
 
-def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int = 20, use_rag: bool = True, use_double_prompt = False) -> Dict[str, Any]:
+def chat_with_corpus(model_type: str,
+                     query: str,
+                     top_k: int = 10,
+                     shard_k: int = 20,
+                     use_rag: bool = True,
+                     use_double_prompt = False,
+                     subsets: List[str] = None
+                     ) -> Dict[str, Any]:
     """
     Returns (answer: str, docs: list[dict])
 
@@ -455,7 +466,7 @@ def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int 
     async def _run():
         # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
         if use_rag:
-            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt, subsets=subsets)
         else:
             answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
 
@@ -488,6 +499,7 @@ def chat_with_corpus(model_type: str, query: str, top_k: int = 10, shard_k: int 
             verbose=False,
             entity_source_query=q,
             fulltext_query=retrieval_text,
+            subsets=subsets,
         )
 
         docs = []
@@ -613,14 +625,16 @@ def api_search():
         if shard_k <= 0 or shard_k > 200:
             return jsonify({"ok": False, "error": "Field 'shard_k' must be between 1 and 200"}), 400
 
+        subsets = payload.get("subsets", None)
+
         # Call search_corpus in a compatible way
         sig = inspect.signature(search_corpus)
         params = sig.parameters
 
         if "shard_k" in params:
-            results = search_corpus(query, top_k=top_k, shard_k=shard_k)
+            results = search_corpus(query, top_k=top_k, shard_k=shard_k, subsets=subsets)
         elif "centroid_k" in params:
-            results = search_corpus(query, top_k=top_k, centroid_k=shard_k)  # in case you used centroid_k
+            results = search_corpus(query, top_k=top_k, centroid_k=shard_k, subsets=subsets)  # in case you used centroid_k
         else:
             # old signature: search_corpus(query, top_k)
             results = search_corpus(query, top_k)
@@ -722,6 +736,8 @@ def api_chat():
             "error": "Field 'model_type' was missing"
         }), 400
 
+    subsets = payload.get("subsets", None)
+
     if not model_adapters.is_valid_model_type(model_type):
         app_logger.warning(f"Chat request model_type was invalid: {model_type}")
         return jsonify({
@@ -761,7 +777,7 @@ def api_chat():
 
         # send wake-up request to model
         rag_controller.send_warmup()
-        rag_controller.queue_job(user_id, job_id, model_type, msg)
+        rag_controller.queue_job(user_id, job_id, model_type, msg, subsets)
 
         return jsonify({
             "ok": False,
@@ -780,7 +796,7 @@ def api_chat():
         inflight_chat_reqs.inc()
 
         # LLM model call goes here
-        answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT, subsets=subsets)
         app_logger.info(f"Original search references in api_chat: {docs}")
 
         # clean up docs of copyrighted material
