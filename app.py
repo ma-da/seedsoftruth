@@ -624,8 +624,7 @@ def api_search():
             return jsonify({"ok": False, "error": "Field 'top_k' must be between 1 and 200"}), 400
         if shard_k <= 0 or shard_k > 200:
             return jsonify({"ok": False, "error": "Field 'shard_k' must be between 1 and 200"}), 400
-
-        subsets = payload.get("subsets", None)
+        subsets = payload.get("subsets", None)    
 
         # Call search_corpus in a compatible way
         sig = inspect.signature(search_corpus)
@@ -735,8 +734,8 @@ def api_chat():
             "ok": False,
             "error": "Field 'model_type' was missing"
         }), 400
-
-    subsets = payload.get("subsets", None)
+        
+    subsets = payload.get("subsets", None)    
 
     if not model_adapters.is_valid_model_type(model_type):
         app_logger.warning(f"Chat request model_type was invalid: {model_type}")
