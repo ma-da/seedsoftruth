@@ -1872,7 +1872,7 @@ async function apiFeedback() {
   return apiGet(CFG.API.FEEDBACK);
 }
 
-async function apiStatus({ health = false } = {}) {
+async function apiStatus({ health = true } = {}) {
   return fetchJsonWithTimeout(CFG.API.STATUS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1880,7 +1880,7 @@ async function apiStatus({ health = false } = {}) {
     body: JSON.stringify({
         health: String(health)
     })
-  }, 4000);
+  }, 10000);
 } 
 
 async function apiQueue() {
@@ -1920,9 +1920,6 @@ async function handleChatSubmit(e) {
 
   // Define model type
   const model_type = toolState.modelType || "spark";
-
-  // DEBUG ONLY
-  console.log("SUBSETS: " + toolState.searchGroup);
 
   // Base payload (chat / ab). Search uses query instead of message.
   const payload = {
