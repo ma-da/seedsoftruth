@@ -40,16 +40,27 @@ TRINEDAY_TOKEN = "Trine Day Publishing"
 COPYRIGHT_BLOCK_MSG = "This text protected by copyright."
 
 # ------------------ MODEL ADAPTERS ------------------
-# Two model adapters enter, one model adapter leaves.
 hf_llm_model = model_adapters.LLMFactory.create("hf")
 deep_infra_llm_model = model_adapters.LLMFactory.create("deepinfra")
+spark_llm_model = model_adapters.LLMFactory.create("spark")
 
-llm_model = hf_llm_model
-llm_models = [hf_llm_model, deep_infra_llm_model]
+DEFAULT_MODEL_TYPE = os.getenv("MODEL_ADAPTER", "hf").strip().lower()
+
+if DEFAULT_MODEL_TYPE == "spark":
+    llm_model = spark_llm_model
+elif DEFAULT_MODEL_TYPE == "deepinfra":
+    llm_model = deep_infra_llm_model
+else:
+    llm_model = hf_llm_model
+
+llm_models = [hf_llm_model, deep_infra_llm_model, spark_llm_model]
 
 
 def get_model_type(type: str) -> model_adapters.LLMStrategy:
-    global llm_model, hf_llm_model, deep_infra_llm_model
+    global llm_model, hf_llm_model, deep_infra_llm_model, spark_llm_model
+
+    if type == "default":
+        return llm_model
 
     if not model_adapters.is_valid_model_type(type):
         raise ValueError(f"Invalid model type: {type}")
@@ -58,12 +69,14 @@ def get_model_type(type: str) -> model_adapters.LLMStrategy:
         return hf_llm_model
     elif type == "deepinfra":
         return deep_infra_llm_model
-    elif type == "default":
-        return llm_model
+    elif type == "spark":
+        return spark_llm_model
     else:
         raise ValueError(f"Unknown model type: {type}")
-
-
+        
+rag_logger.info(f"DEFAULT_MODEL_TYPE={DEFAULT_MODEL_TYPE}")
+rag_logger.info(f"llm_model selected: {llm_model.name()}")
+rag_logger.info(f"available model names: {[m.name() for m in llm_models]}")        
 # ------------------ CONFIG ------------------
 
 MAX_QUESTION_WORDS = 400
@@ -121,7 +134,7 @@ class QueuedJob:
     job_id: str
     model_type: str
     prompt: str
-    subsets: List[str]
+    subsets: List[str] | None = None
 
 
 @dataclass_json
@@ -135,6 +148,7 @@ class QueuedResponse:
     prompt: str
     reply: str
     references: str
+    subsets: List[str] | None = None
 
 
 # ------------------ SQLITE / BOOT ------------------
@@ -710,7 +724,7 @@ def _hybrid_search_sqlite(
     )
 
     raw_ft_query = str(fulltext_query or "").strip()
-    phrase_fulltext_query = _build_phrase_query(raw_ft_query)
+    phrase_fulltext_query = ""
     strict_fulltext_query = build_fulltext_query(raw_ft_query, require_all=True)
     broad_fulltext_query = build_fulltext_query(raw_ft_query, require_all=False)
 
@@ -944,18 +958,14 @@ def _hybrid_search_sqlite(
 
         keyword_bonus = _keyword_overlap_bonus(raw_ft_query, title, fulltext_text)
         phrase_bonus = _exact_phrase_bonus(raw_ft_query, title, fulltext_text)
-
-        title_penalty = min(-_generic_title_penalty(title), 0)
+        title_penalty = _generic_title_penalty(title)
 
         adjusted_hybrid_score = (
             hybrid_score
-            + title_penalty
+            - title_penalty
             + keyword_bonus
             + phrase_bonus
         )
-
-        # DEBUG ONLY
-        rag_logger.info(f"lookup idx: {lookup_id}, adjusted_hybrid_score: {adjusted_hybrid_score}, hybrid_score: {hybrid_score}, raw_score: {raw_score}, title_penalty {title_penalty}, keyword_bonus: {keyword_bonus}, phrase_bonus: {phrase_bonus}")
 
         rescored.append(
             (
@@ -1541,6 +1551,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
