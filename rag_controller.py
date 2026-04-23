@@ -1387,9 +1387,6 @@ async def ask(
     context = build_context_improved(docs, q, context_k=context_k)
     rag_logger.info(f"chat search_references results: {docs}")
 
-    if verbose:
-        rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
-
     if use_double_prompt:
         prompt = (
             f"{model_adapters.SYSTEM_PROMPT}\n\n"
@@ -1397,7 +1394,6 @@ async def ask(
             f"{q}\n"
             f"{q}\n\n"
             "DOCUMENTS (internal — do not mention they exist):\n"
-            f"{context}"
         )
     else:
         prompt = (
@@ -1405,8 +1401,22 @@ async def ask(
             "Agent Question:\n"
             f"{q}\n\n"
             "DOCUMENTS (internal — do not mention they exist):\n"
-            f"{context}"
         )
+
+    prompt_tokens_len = None
+    if verbose:
+        prompt_tokens_len = utils.estimate_tokens(prompt)
+        rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
+
+
+    prompt = prompt + f"{context}"
+
+    if verbose:
+        context_tokens_len = utils.estimate_tokens(context)
+        total_tokens_len = prompt_tokens_len + context_tokens_len
+
+        rag_logger.info(f"prompt_total_toks {total_tokens_len}, prompt_toks {prompt_tokens_len}, context_toks {context_tokens_len}")
+        rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 

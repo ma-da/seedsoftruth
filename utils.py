@@ -26,6 +26,10 @@ def str_to_bool(s: str, strict = True) -> bool:
         return False
 
 
+def estimate_tokens(text: str) -> int:
+    return int(len(text.split()) * 1.3)
+
+
 class SafeInt:
     """
     A thread-safe int wrapper.
