@@ -2067,7 +2067,7 @@ async function handleChatSubmit(e) {
   } catch (err) {
     // process queued up message
     //if ((err.status) == 503 && err.error.includes('queued')) {
-    if (err.status == 503) {
+    if (err?.status === 503) {
         const job_id = err.job_id ?? null;
         if (job_id) {
             console.log("Chat message was queued with job_id: " + job_id)
@@ -2079,9 +2079,7 @@ async function handleChatSubmit(e) {
         pushStatusMessage(NOT_READY_MSG);
         setEndpointStatus('starting');
         return;
-    }
-
-    if (err?.status === 403) {
+    } else if (err?.status === 403) {
       // Access revoked / expired
       setModeAccess(false);
       toolState.mode = 'search';
@@ -2090,11 +2088,21 @@ async function handleChatSubmit(e) {
       appendMessage('Not today. Search mode only.', 'bot', CFG.JOB_ID_NONE);
       pushTurn(text, 'Not today. Search mode only.');
       return;
+    } else if (err?.status === 429) {
+        var errMsg = "Rate limiting triggered. Please wait before submitting again.";
+        appendMessage(errMsg, 'bot', CFG.JOB_ID_NONE);
+        pushStatusMessage(errMsg);
+        setReferences([]);
+    } else if (typeof err?.message === "string") {
+        var errMsg = 'Server responded with error: ' + err?.message;
+        appendMessage(errMsg, 'bot', CFG.JOB_ID_NONE);
+        pushStatusMessage(String(err?.message));
+        setReferences([]);
+    } else {
+        appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
+        pushStatusMessage(String(err?.message || err));
+        setReferences([]);
     }
-
-    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
-    pushStatusMessage(String(err?.message || err));
-    setReferences([]);
 
   } finally {
     // Covers chat + ab + outer errors.
