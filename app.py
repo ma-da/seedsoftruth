@@ -358,7 +358,9 @@ app_logger.info(f"Python version: {platform.python_version()}")
 def search_corpus(query: str,
                   top_k: int,
                   shard_k: int = 20,
-                  subsets: List[str] = None) -> Dict[str, Any]:
+                  subsets: List[str] = None,
+                  rag_algo_choice: int = 0,
+                  ) -> Dict[str, Any]:
     """
     Retrieval-only search using rag_controller.search_references(state,...).
 
@@ -384,6 +386,7 @@ def search_corpus(query: str,
             centroid_k=int(shard_k),
             verbose=False,
             subsets=subsets,
+            rag_algo_choice=rag_algo_choice,
         )
 
     out = utils.do_async_to_sync(_run)() or {}
@@ -440,7 +443,8 @@ def chat_with_corpus(model_type: str,
                      shard_k: int = 20,
                      use_rag: bool = True,
                      use_double_prompt = False,
-                     subsets: List[str] = None
+                     subsets: List[str] = None,
+                     rag_algo_choice: int = 0,
                      ) -> Dict[str, Any]:
     """
     Returns (answer: str, docs: list[dict])
@@ -466,7 +470,7 @@ def chat_with_corpus(model_type: str,
     async def _run():
         # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
         if use_rag:
-            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt, subsets=subsets)
+            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=True, use_double_prompt = use_double_prompt, subsets=subsets, rag_algo_choice=rag_algo_choice)
         else:
             answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
 
@@ -500,6 +504,7 @@ def chat_with_corpus(model_type: str,
             entity_source_query=q,
             fulltext_query=retrieval_text,
             subsets=subsets,
+            rag_algo_choice=rag_algo_choice,
         )
 
         docs = []
@@ -629,14 +634,15 @@ def api_search():
         # Call search_corpus in a compatible way
         sig = inspect.signature(search_corpus)
         params = sig.parameters
+        rag_algo_choice = model_adapters.DEFAULT_HYBRID_RAG_ALGO
 
         if "shard_k" in params:
-            results = search_corpus(query, top_k=top_k, shard_k=shard_k, subsets=subsets)
+            results = search_corpus(query, top_k=top_k, shard_k=shard_k, subsets=subsets, rag_algo_choice=rag_algo_choice)
         elif "centroid_k" in params:
-            results = search_corpus(query, top_k=top_k, centroid_k=shard_k, subsets=subsets)  # in case you used centroid_k
+            results = search_corpus(query, top_k=top_k, centroid_k=shard_k, subsets=subsets, rag_algo_choice=rag_algo_choice)  # in case you used centroid_k
         else:
             # old signature: search_corpus(query, top_k)
-            results = search_corpus(query, top_k)
+            results = search_corpus(query, top_k, rag_algo_choice=rag_algo_choice)
 
         # Normalize results BEFORE .get calls (prevents HTML 500)
         if not isinstance(results, dict):
@@ -788,6 +794,8 @@ def api_chat():
     else:
         app_logger.info("Model is ready for requests")
 
+    rag_algo_choice = model_adapters.DEFAULT_HYBRID_RAG_ALGO
+
     try:
         app_logger.info("Triggering chat_with_corpus...")
 
@@ -795,7 +803,13 @@ def api_chat():
         inflight_chat_reqs.inc()
 
         # LLM model call goes here
-        answer, docs = chat_with_corpus(model_type, msg, top_k=10, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT, subsets=subsets)
+        answer, docs = chat_with_corpus(model_type,
+                                        msg,
+                                        top_k=10,
+                                        use_rag=use_rag,
+                                        use_double_prompt=USE_DOUBLE_PROMPT,
+                                        subsets=subsets,
+                                        rag_algo_choice=rag_algo_choice)
         app_logger.info(f"Original search references in api_chat: {docs}")
 
         # clean up docs of copyrighted material

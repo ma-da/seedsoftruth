@@ -84,15 +84,16 @@ class SimpleUserRateLimiter:
 
         curr_time = int(time.time())
         last_time = self.user_data.get(user_id)
-        self.user_data[user_id] = curr_time
 
         if last_time is None:
             return True
         else:
             assert curr_time >= last_time  # if not true, then its nonsensical
             diff = curr_time - last_time
-            return diff >= self.interval_secs
-
+            is_allowed = diff >= self.interval_secs
+            if is_allowed:
+                self.user_data[user_id] = curr_time
+            return is_allowed
 
 def get_payload_str(payload, key, default=""):
     """

@@ -33,6 +33,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 
+import rag_controller
+
 DB_PATH = Path("db/app.db")
 
 def init_db():
@@ -108,6 +110,17 @@ def init_db():
 def get_conn():
     conn = sqlite3.connect(
         DB_PATH,
+        timeout=30,
+        isolation_level=None,
+        check_same_thread=False,
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_hybrid_db_conn():
+    conn = sqlite3.connect(
+        rag_controller.HYBRID_DB_PATH,
         timeout=30,
         isolation_level=None,
         check_same_thread=False,
@@ -328,3 +341,92 @@ def get_feedback_by_id(
     )
     row = cur.fetchone()
     return dict(row) if row else None
+
+
+def get_chunk_entities(
+    chunk_id: str
+) -> list[dict]:
+    """
+    Returns entity metadata for a chunk.
+
+    Example:
+    [
+      {
+        "name": "Joe Rogan",
+        "type": "person"
+      },
+      ...
+    ]
+    """
+    with get_hybrid_db_conn() as conn:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                e.canonical_name,
+                e.type
+            FROM chunks c
+            JOIN chunk_entities ce
+              ON c.lookup_id = ce.chunk_lookup_id
+            JOIN entities e
+              ON ce.entity_id = e.entity_id
+            WHERE c.chunk_id = ?
+            ORDER BY e.type, e.canonical_name
+            """,
+            (chunk_id,)
+        )
+
+        rows = cur.fetchall()
+
+        return [
+            {
+                "name": row["canonical_name"],
+                "type": row["type"],
+            }
+            for row in rows
+        ]
+
+
+def get_chunk_topics(
+        chunk_id: str
+) -> list[dict]:
+    """
+    Returns topic metadata for a chunk.
+
+    Example:
+    [
+      {
+        "domain": "media_information",
+        "topic": "information_warfare"
+      }
+    ]
+    """
+    with get_hybrid_db_conn() as conn:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                t.domain,
+                t.topic_name
+            FROM chunks c
+            JOIN chunk_topics ct
+              ON c.lookup_id = ct.chunk_lookup_id
+            JOIN topics t
+              ON ct.topic_id = t.topic_id
+            WHERE c.chunk_id = ?
+            ORDER BY t.domain, t.topic_name
+            """,
+            (chunk_id,)
+        )
+
+        rows = cur.fetchall()
+
+        return [
+            {
+                "domain": row["domain"],
+                "topic": row["topic_name"],
+            }
+            for row in rows
+        ]
