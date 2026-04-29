@@ -1226,6 +1226,94 @@ body.light .tools-select:hover{
   box-shadow: 0 0 0 3px rgba(99,102,241,0.35);
 }
 
+/* Hobbit knob-row: two tiny numeric dials for retrieval/prompt experiments */
+.tools-compact-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tools-mini-field {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 6px;
+
+  padding: 4px;
+
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+  border-radius: 12px;
+  background: var(--surface-soft, rgba(148, 163, 184, 0.08));
+  overflow: hidden;
+}
+
+.tools-mini-field span {
+  min-width: 0;
+  max-width: 100%;
+
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-muted, #64748b);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tools-number {
+  box-sizing: border-box;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  height: 30px;
+
+  padding: 2px 4px;
+
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.4));
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: var(--text, #0f172a);
+
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.tools-number:focus {
+  outline: none;
+  border-color: var(--violet-main, #8a73af);
+  box-shadow: 0 0 0 3px rgba(138, 115, 175, 0.18);
+}
+
+.tools-help--tight {
+  margin-top: 7px;
+}
+
+@media (max-width: 420px) {
+  .tools-compact-pair {
+    gap: 8px;
+  }
+
+  .tools-mini-field {
+    padding: 7px 8px;
+  }
+
+  .tools-mini-field span {
+    font-size: 0.72rem;
+  }
+
+  .tools-number {
+    width: 42px;
+  }
+}
+
 /* Light mode tuning */
 body.light .toggle-track{
   background: rgba(15,23,42,0.08);
