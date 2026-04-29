@@ -545,9 +545,15 @@ function initMobileSidebar() {
    ========================================================= */
 
 function getToolPayloadState() {
+  const selectedSubsets = getSubsetsForCombo(toolState.searchGroup);
+
   return {
     use_rag: !!toolState.useRag,
-    subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : [],
+
+    // Always send selected subsets.
+    // Backend can ignore these when use_rag is false.
+    subsets: selectedSubsets,
+
     rag_algo_type: clampInt(toolState.ragAlgoType, 1, 10, 1),
     prompt_type: clampInt(toolState.promptType, 1, 10, 1)
   };
@@ -1979,6 +1985,8 @@ async function handleChatSubmit(e) {
     model_type,
     ...getToolPayloadState()
   };
+
+  console.log('[Chat/A-B → Flask] payload:', payload);
 
   // Start “busy” immediately so the user gets feedback right away
   const initialLabel =
