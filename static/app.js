@@ -113,7 +113,10 @@ const toolState = {
   mode: CFG.DEFAULT_MODE,
   useRag: true,
   searchGroup: 'Deep Politics',  
-  modelType: "spark"
+  modelType: "spark",
+  // Experimental routing/prompt controls, persisted with other tool state
+  ragAlgoType: 1,
+  promptType: 1  
 };
 
 // client-side turns: { user: string, assistant: string }
@@ -541,6 +544,15 @@ function initMobileSidebar() {
    7) TOOLS POPUP + TOOL STATE
    ========================================================= */
 
+function getToolPayloadState() {
+  return {
+    use_rag: !!toolState.useRag,
+    subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : [],
+    rag_algo_type: clampInt(toolState.ragAlgoType, 1, 10, 1),
+    prompt_type: clampInt(toolState.promptType, 1, 10, 1)
+  };
+}
+
 function loadToolState() {
   try {
     const raw = localStorage.getItem(CFG.LS_TOOLS);
@@ -567,7 +579,16 @@ function loadToolState() {
     }
     if (typeof parsed.searchGroup === 'string') {
       toolState.searchGroup = parsed.searchGroup;
-    }	
+    }
+	const savedRagAlgoType = clamp1to10(parsed.ragAlgoType);
+	if (savedRagAlgoType !== null) {
+	  toolState.ragAlgoType = savedRagAlgoType;
+	}
+
+	const savedPromptType = clamp1to10(parsed.promptType);
+	if (savedPromptType !== null) {
+	  toolState.promptType = savedPromptType;
+	}	
   } catch (_) {}
 }
 
@@ -620,6 +641,13 @@ function renderToolState() {
   }
   if (els.searchGroup) {
     els.searchGroup.value = toolState.searchGroup;
+  }
+  if (els.ragAlgoType) {
+    els.ragAlgoType.value = String(toolState.ragAlgoType);
+  }
+
+  if (els.promptType) {
+    els.promptType.value = String(toolState.promptType);
   }  
 }
 
@@ -706,8 +734,28 @@ function initToolsPopup() {
         pushStatusMessage(`Search group: ${toolState.searchGroup}`);
       }
     });
-  }  
-}
+  }
+  function bindToolNumberInput(el, stateKey, label) {
+    if (!el) return;
+
+    const sync = () => {
+      const value = clampInt(el.value, 1, 10, 1);
+      toolState[stateKey] = value;
+      el.value = String(value);
+      saveToolState();
+
+      if (typeof pushStatusMessage === 'function') {
+        pushStatusMessage(`${label}: ${value}`);
+      }
+    };
+
+    el.addEventListener('change', sync);
+    el.addEventListener('blur', sync);
+  }
+
+  bindToolNumberInput(els.ragAlgoType, 'ragAlgoType', 'Algo');
+  bindToolNumberInput(els.promptType, 'promptType', 'Prompt');  
+  }
 
 // Model selection
 const modelSelect = document.getElementById("model-type");
@@ -1928,9 +1976,8 @@ async function handleChatSubmit(e) {
     mode: toolState.mode,
     history_turns: toolState.historyTurns,
     context: contextTurns,
-    use_rag: !!toolState.useRag,
-    subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : [],
-    model_type
+    model_type,
+    ...getToolPayloadState()
   };
 
   // Start “busy” immediately so the user gets feedback right away
@@ -1951,18 +1998,18 @@ async function handleChatSubmit(e) {
     }
 
     if (toolState.mode === 'search') {
-      const searchPayload = {
-        user_id: userId,
-        query: text,
-        max_n: CFG.MAX_REFS,
-        mode: 'search',
-        history_turns: toolState.historyTurns,
-        context: contextTurns,
-        use_rag: !!toolState.useRag,
-        subsets: toolState.useRag ? getSubsetsForCombo(toolState.searchGroup) : []
-      };
+	  const searchPayload = {
+	    user_id: userId,
+	    query: text,
+	    max_n: CFG.MAX_REFS,
+	    mode: 'search',
+	    history_turns: toolState.historyTurns,
+	    context: contextTurns,
+	    ...getToolPayloadState()
+	  };
 
       console.log('[Search → Flask] payload:', searchPayload);
+	  console.log('[Chat/A-B → Flask] payload:', payload);
 
       // Use an inner try/finally so we *always* end busy even though we return early
       try {
@@ -2067,7 +2114,7 @@ async function handleChatSubmit(e) {
   } catch (err) {
     // process queued up message
     //if ((err.status) == 503 && err.error.includes('queued')) {
-    if (err?.status === 503) {
+    if (err.status == 503) {
         const job_id = err.job_id ?? null;
         if (job_id) {
             console.log("Chat message was queued with job_id: " + job_id)
@@ -2079,7 +2126,9 @@ async function handleChatSubmit(e) {
         pushStatusMessage(NOT_READY_MSG);
         setEndpointStatus('starting');
         return;
-    } else if (err?.status === 403) {
+    }
+
+    if (err?.status === 403) {
       // Access revoked / expired
       setModeAccess(false);
       toolState.mode = 'search';
@@ -2088,21 +2137,11 @@ async function handleChatSubmit(e) {
       appendMessage('Not today. Search mode only.', 'bot', CFG.JOB_ID_NONE);
       pushTurn(text, 'Not today. Search mode only.');
       return;
-    } else if (err?.status === 429) {
-        var errMsg = "Rate limiting triggered. Please wait before submitting again.";
-        appendMessage(errMsg, 'bot', CFG.JOB_ID_NONE);
-        pushStatusMessage(errMsg);
-        setReferences([]);
-    } else if (typeof err?.message === "string") {
-        var errMsg = 'Server responded with error: ' + err?.message;
-        appendMessage(errMsg, 'bot', CFG.JOB_ID_NONE);
-        pushStatusMessage(String(err?.message));
-        setReferences([]);
-    } else {
-        appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
-        pushStatusMessage(String(err?.message || err));
-        setReferences([]);
     }
+
+    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
+    pushStatusMessage(String(err?.message || err));
+    setReferences([]);
 
   } finally {
     // Covers chat + ab + outer errors.
@@ -2479,6 +2518,9 @@ function initDom() {
   els.modeHelp = document.getElementById('mode-help');
   els.modeRadios = Array.from(document.querySelectorAll('input[name="mode"]'));
   els.searchGroup = document.getElementById('search-group');
+  els.ragToggle = document.getElementById('rag-toggle');
+  els.ragAlgoType = document.getElementById('rag-algo-type');
+  els.promptType = document.getElementById('prompt-type');  
 
   // status panel
   els.endpointDot = document.getElementById('endpoint-dot');
