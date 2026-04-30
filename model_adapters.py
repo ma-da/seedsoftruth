@@ -12,13 +12,14 @@ DEFAULT_TEMPERATURE = 0.3
 
 MODEL_TIMEOUT_SECS = 5
 
+# DEPRECATED
 # this is a server-end variable for selecting model prompt to use
-SYSTEM_PROMPT = model_prompts.DEEP_REPORTING_V1_SYSTEM_PROMPT
+#SYSTEM_PROMPT = model_prompts.DEEP_REPORTING_V1_SYSTEM_PROMPT
 #SYSTEM_PROMPT = model_prompts.SMOKING_MAN_SYSTEM_PROMPT
 
 model_logger = logging_config.get_logger("rag")
 
-MODEL_ADAPTOR_NAMES = ["hf", "deepinfra", "spark"]
+MODEL_ADAPTOR_NAMES = ["hf", "deepinfra", "spark", "sim"]
 
 # this is a server-end variable for selecting the hybrid rag algo
 DEFAULT_HYBRID_RAG_ALGO = 1
@@ -53,6 +54,12 @@ SPARK_SITE_API_KEY = os.getenv("SPARK_SITE_API_KEY", "").strip()
 SPARK_CF_ACCESS_CLIENT_ID = os.getenv("SPARK_CF_ACCESS_CLIENT_ID", "").strip()
 SPARK_CF_ACCESS_CLIENT_SECRET = os.getenv("SPARK_CF_ACCESS_CLIENT_SECRET", "").strip()
 SPARK_MODEL_NAME = os.getenv("SPARK_MODEL_NAME", "wtk_gamma_v9").strip()
+
+
+def get_system_prompt(prompt_type: int):
+    if prompt_type < 0 or prompt_type >= len(model_prompts.MODEL_SYSTEM_PROMPTS):
+        raise RuntimeError(f"Invalid prompt type: {prompt_type}")
+    return model_prompts.MODEL_SYSTEM_PROMPTS[prompt_type]
 
 
 class LLMStrategy(ABC):
@@ -475,6 +482,48 @@ class SparkCloudflareLLM(LLMStrategy):
             return False
 
 
+# This is simulated endpoint just for testing
+class SimEndpointLLM(LLMStrategy):
+    def __init__(self):
+        pass
+
+    def name(self) -> str:
+        return "sim_adapter"
+
+    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
+        response = "SimEndpoint echoed:" + prompt
+        return prompt
+
+    def prevalidate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> str:
+        return ""
+
+    def generate_header(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def generate_payload(self, prompt: str, *, max_new_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = DEFAULT_TEMPERATURE) -> dict[str, Any]:
+        return {
+            "inputs": prompt,
+            "parameters": {
+                "temperature": float(temperature),
+                "max_new_tokens": int(max_new_tokens),
+                "return_full_text": False,
+            },
+        }
+
+    def parse_results_text(self, data) -> str:
+        return str(data)
+
+    async def is_model_ready(self, timeout=MODEL_TIMEOUT_SECS) -> bool:
+        return True
+
+    async def send_warmup(self) -> bool:
+        return True
+
+
 class LLMFactory:
     @staticmethod
     def create(kind) -> LLMStrategy:
@@ -501,6 +550,10 @@ class LLMFactory:
                 cf_access_client_secret=os.environ.get("SPARK_CF_ACCESS_CLIENT_SECRET", ""),
                 model_name=os.environ.get("SPARK_MODEL_NAME", SPARK_MODEL_NAME),
             )
+
+        if kind == "sim":
+            model_logger.info("Creating Simulation model adapter")
+            return SimEndpointLLM()
 
         raise ValueError(f"Unknown LLM type: {kind}")
 

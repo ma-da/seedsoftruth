@@ -40,6 +40,7 @@ import platform
 from numpy.ma.core import true_divide
 
 import model_adapters
+import model_prompts
 import rag_controller
 
 from flask import Flask, render_template, request, jsonify, session, abort
@@ -445,6 +446,7 @@ def chat_with_corpus(model_type: str,
                      use_double_prompt = False,
                      subsets: List[str] = None,
                      rag_algo_choice: int = 0,
+                     prompt_type: int = 0,
                      ) -> Dict[str, Any]:
     """
     Returns (answer: str, docs: list[dict])
@@ -470,9 +472,9 @@ def chat_with_corpus(model_type: str,
     async def _run():
         # 1) LLM answer (rag_controller.ask does its own retrieval + context building. Skipped if rag toggled off)
         if use_rag:
-            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=True, use_double_prompt = use_double_prompt, subsets=subsets, rag_algo_choice=rag_algo_choice)
+            answer = await rag_controller.ask(model_adaptor, retrieval_state, q, verbose=True, use_double_prompt = use_double_prompt, subsets=subsets, rag_algo_choice=rag_algo_choice, prompt_type=prompt_type)
         else:
-            answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt)
+            answer = await rag_controller.ask_model_only(model_adaptor, retrieval_state, q, verbose=False, use_double_prompt = use_double_prompt, prompt_type=prompt_type)
 
         answer = str(answer or "").strip()
 
@@ -629,12 +631,18 @@ def api_search():
             return jsonify({"ok": False, "error": "Field 'top_k' must be between 1 and 200"}), 400
         if shard_k <= 0 or shard_k > 200:
             return jsonify({"ok": False, "error": "Field 'shard_k' must be between 1 and 200"}), 400
-        subsets = payload.get("subsets", None)    
+        subsets = payload.get("subsets", None)
+
+        rag_algo_type = payload.get("rag_algo_type", None)
+        if rag_algo_type is None:
+            rag_algo_type = 0
+        else:
+            rag_algo_type = int(rag_algo_type)
 
         # Call search_corpus in a compatible way
         sig = inspect.signature(search_corpus)
         params = sig.parameters
-        rag_algo_choice = model_adapters.DEFAULT_HYBRID_RAG_ALGO
+        rag_algo_choice = rag_algo_type
 
         if "shard_k" in params:
             results = search_corpus(query, top_k=top_k, shard_k=shard_k, subsets=subsets, rag_algo_choice=rag_algo_choice)
@@ -750,6 +758,24 @@ def api_chat():
             "error": "Field 'model_type' was invalid"
         }), 400
 
+    rag_algo_type = payload.get("rag_algo_type", None)
+    if rag_algo_type is None:
+        rag_algo_type = 0
+    else:
+        rag_algo_type = int(rag_algo_type)
+
+    prompt_type = payload.get("prompt_type", None)
+    if prompt_type is None:
+        rag_algo_type = 0
+    else:
+        prompt_type = int(prompt_type) - 1
+        if prompt_type < 0 or prompt_type >= len(model_prompts.MODEL_SYSTEM_PROMPTS):
+            app_logger.warning(f"Chat request prompt_type was invalid: {model_type}")
+            return jsonify({
+                "ok": False,
+                "error": "Field 'prompt_type' was invalid"
+            }), 400
+
     # rate limit check. blocks if user sending too frequently.
     if not rate_limiter.check(user_id):
         app_logger.warning("Chat request user_id was rate limited")
@@ -775,7 +801,7 @@ def api_chat():
             "detail": str(e),
         }), 500
 
-    model_ready = rag_controller.is_model_ready()
+    model_ready = rag_controller.is_model_type_ready(model_type)
     if not model_ready or force_queue:
         preview_msg = msg[:40]
         app_logger.warning(f"Model is not ready. Queueing msg for user {user_id}. Msg: {preview_msg}...  ")
@@ -794,7 +820,8 @@ def api_chat():
     else:
         app_logger.info("Model is ready for requests")
 
-    rag_algo_choice = model_adapters.DEFAULT_HYBRID_RAG_ALGO
+
+    rag_algo_choice = rag_algo_type
 
     try:
         app_logger.info("Triggering chat_with_corpus...")
@@ -809,7 +836,8 @@ def api_chat():
                                         use_rag=use_rag,
                                         use_double_prompt=USE_DOUBLE_PROMPT,
                                         subsets=subsets,
-                                        rag_algo_choice=rag_algo_choice)
+                                        rag_algo_choice=rag_algo_choice,
+                                        prompt_type=prompt_type)
         app_logger.info(f"Original search references in api_chat: {docs}")
 
         # clean up docs of copyrighted material

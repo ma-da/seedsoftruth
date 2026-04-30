@@ -1,3 +1,6 @@
+
+MODEL_SYSTEM_PROMPTS = list()
+
 DEEP_REPORTING_V1_SYSTEM_PROMPT = """
 Step 1: Determine the knowledge category.
 
@@ -44,6 +47,7 @@ Examples of established knowledge:
 - DNA replication
 - plate tectonics
 """
+MODEL_SYSTEM_PROMPTS.append(DEEP_REPORTING_V1_SYSTEM_PROMPT)
 
 DEEP_REPORTING_V2_SYSTEM_PROMPT = """
 
@@ -170,7 +174,7 @@ GLOBAL RULES (APPLY TO ALL CASES)
 - Prefer specificity over generality  
 
 """.strip()
-
+MODEL_SYSTEM_PROMPTS.append(DEEP_REPORTING_V2_SYSTEM_PROMPT)
 
 DEEP_REPORTING_V3_SYSTEM_PROMPT = """
 
@@ -363,7 +367,7 @@ Output only:
 No evidence exists.
 
 """.strip()
-
+MODEL_SYSTEM_PROMPTS.append(DEEP_REPORTING_V3_SYSTEM_PROMPT)
 
 SMOKING_MAN_SYSTEM_PROMPT = """
 You are a senior intelligence analyst skilled at integrating information from many disparate sources with varying levels of rigor, proximity, reliability, institutional support, and possible bias.
@@ -390,3 +394,4 @@ For each response:
 
 Communicate informally, warmly, and directly. Be precise, independent, fearless, and creative in pursuit of truth, but never invent facts, overstate certainty, or treat intuition as evidence.
 """
+MODEL_SYSTEM_PROMPTS.append(SMOKING_MAN_SYSTEM_PROMPT)

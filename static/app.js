@@ -2682,6 +2682,15 @@ function init() {
   window.setReferences = setReferences;
   window.openFeedbackModal = openFeedbackModal;
   window.pushStatusMessage = pushStatusMessage;
+
+  // enable sim adapter only for devmode
+  if (CFG.DEV_MODE) {
+    const select = document.getElementById('model-type');
+    const simOption = document.createElement('option');
+    simOption.textContent ='Sim Adapter (testing)'
+    simOption.value = 'sim'
+    select.appendChild(simOption);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

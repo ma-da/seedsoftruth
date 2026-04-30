@@ -31,6 +31,7 @@ import string
 
 import logging_config
 import model_adapters
+import model_prompts
 import rag_cleaner
 import utils
 
@@ -43,6 +44,7 @@ COPYRIGHT_BLOCK_MSG = "This text protected by copyright."
 hf_llm_model = model_adapters.LLMFactory.create("hf")
 deep_infra_llm_model = model_adapters.LLMFactory.create("deepinfra")
 spark_llm_model = model_adapters.LLMFactory.create("spark")
+sim_model = model_adapters.LLMFactory.create("sim")
 
 DEFAULT_MODEL_TYPE = os.getenv("MODEL_ADAPTER", "hf").strip().lower()
 
@@ -57,7 +59,7 @@ llm_models = [hf_llm_model, deep_infra_llm_model, spark_llm_model]
 
 
 def get_model_type(type: str) -> model_adapters.LLMStrategy:
-    global llm_model, hf_llm_model, deep_infra_llm_model, spark_llm_model
+    global llm_model, hf_llm_model, deep_infra_llm_model, spark_llm_model, sim_model
 
     if type == "default":
         return llm_model
@@ -71,6 +73,8 @@ def get_model_type(type: str) -> model_adapters.LLMStrategy:
         return deep_infra_llm_model
     elif type == "spark":
         return spark_llm_model
+    elif type == "sim":
+        return sim_model
     else:
         raise ValueError(f"Unknown model type: {type}")
         
@@ -1733,7 +1737,7 @@ def _hybrid_search_sqlite2(
           coverage_score,
           rarity_score,
           cooccur_bonus
-        )=_entity_structured_score(
+        )=_entity_structured_score_simple(
             entity_terms,
             chunk_entities,
             entity_df,
@@ -2120,6 +2124,44 @@ def _candidate_entities(cur, ids: List[int]) -> Dict[int, List[Tuple[str, str]]]
     return out
 
 
+def _entity_structured_score_simple(
+    query_entities: List[str],
+    chunk_entities: List[Tuple[str, str]],
+    entity_df: Dict[str, int],
+    corpus_chunks: int,
+) -> Tuple[float, float, float]:
+    """
+    LEGACY / SIMPLE VERSION (original 3-return)
+    Used in early v2. No matched_entity_count.
+    """
+    if not query_entities:
+        return 0.0, 0.0, 0.0
+
+    chunk_names = {e[0] for e in chunk_entities}
+    matched = [e for e in query_entities if e in chunk_names]
+
+    if not matched:
+        return 0.0, 0.0, 0.0
+
+    coverage = len(matched) / len(query_entities)
+    coverage_score = coverage ** 1.5
+
+    rarity = 0.0
+    type_map = dict(chunk_entities)
+    safe_corpus_chunks = max(int(corpus_chunks or 1), 1)
+
+    for e in matched:
+        df = max(entity_df.get(e, 1), 1)
+        idf = math.log(safe_corpus_chunks / df) if safe_corpus_chunks > df else 0.0
+        idf = min(idf, IDF_CAP)
+        rarity += ENTITY_TYPE_WEIGHT.get(type_map.get(e), 0.5) * idf
+
+    rarity /= max(len(matched), 1)
+    cooccur_bonus = COOCCUR_BONUS if len(matched) >= 2 else 0.0
+
+    return coverage_score, rarity, cooccur_bonus
+
+
 def _entity_structured_score(
     query_entities: List[str],
     chunk_entities: List[Tuple[str, str]],
@@ -2127,14 +2169,14 @@ def _entity_structured_score(
     corpus_chunks: int,
 ) -> Tuple[float, float, float, int]:
     """
-    Returns:
-      coverage_score, rarity_score, cooccur_bonus, matched_count
+    ENHANCED VERSION (current 4-return)
+    Returns matched_entity_count for debugging, null-evidence detection, etc.
+    Recommended for new experiments.
     """
     if not query_entities:
         return 0.0, 0.0, 0.0, 0
 
     chunk_names = {e[0] for e in chunk_entities}
-
     matched = [e for e in query_entities if e in chunk_names]
 
     if not matched:
@@ -2145,19 +2187,15 @@ def _entity_structured_score(
 
     rarity = 0.0
     type_map = dict(chunk_entities)
-
     safe_corpus_chunks = max(int(corpus_chunks or 1), 1)
 
     for e in matched:
         df = max(entity_df.get(e, 1), 1)
-
         idf = math.log(safe_corpus_chunks / df) if safe_corpus_chunks > df else 0.0
         idf = min(idf, IDF_CAP)
-
         rarity += ENTITY_TYPE_WEIGHT.get(type_map.get(e), 0.5) * idf
 
     rarity /= max(len(matched), 1)
-
     cooccur_bonus = COOCCUR_BONUS if len(matched) >= 2 else 0.0
 
     return coverage_score, rarity, cooccur_bonus, len(matched)
@@ -2809,10 +2847,7 @@ async def search_references(
     fulltext_source = (fulltext_query or q).strip()
 
     entity_terms = extract_canonical_entity_terms(entity_source, state)
-    rag_logger.info(f"search_references entity_terms={entity_terms}, subsets={subsets}")
-
-    if verbose:
-        rag_logger.info(f"search reference using hybrid_search_sqlite {rag_algo_choice}")
+    rag_logger.info(f"search_references entity_terms={entity_terms}, subsets={subsets}, rag_algo_choice={rag_algo_choice}")
 
     match rag_algo_choice:
         case 1:
@@ -3015,6 +3050,11 @@ def is_model_ready(timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
     return utils.do_async_to_sync(lambda: llm_model.is_model_ready(timeout=timeout))()
 
 
+def is_model_type_ready(model_type: str, timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
+    model = get_model_type(model_type)
+    return utils.do_async_to_sync(lambda: model.is_model_ready(timeout=timeout))()
+
+
 def send_warmup() -> bool:
     return utils.do_async_to_sync(lambda: llm_model.send_warmup())()
 
@@ -3164,6 +3204,7 @@ async def ask(
     use_double_prompt: bool = False,
     subsets: List[str] = None,
     rag_algo_choice: int = 0,
+    prompt_type: int = 0,
 ) -> str:
     model_adaptor_name = model_adaptor.name()
     rag_logger.info(f"ask() using '{model_adaptor_name}': {question[:80]}...")
@@ -3176,9 +3217,12 @@ async def ask(
     context = build_context_improved(docs, q, context_k=context_k)
     rag_logger.info(f"chat search_references results: {docs}")
 
+    system_prompt = model_adapters.get_system_prompt(prompt_type)
+    rag_logger.info(f"system prompt type: {prompt_type}")
+
     if use_double_prompt:
         prompt = (
-            f"{model_adapters.SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             "Agent Question:\n"
             f"{q}\n"
             f"{q}\n\n"
@@ -3186,7 +3230,7 @@ async def ask(
         )
     else:
         prompt = (
-            f"{model_adapters.SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             "Agent Question:\n"
             f"{q}\n\n"
             "DOCUMENTS (internal — do not mention they exist):\n"
@@ -3209,7 +3253,10 @@ async def ask(
 
     rag_logger.info(f"-- PROMPT --\n{prompt} \n-- END PROMPT --")
 
-    answer = model_adaptor.generate(prompt, temperature=model_adapters.DEFAULT_TEMPERATURE, max_new_tokens=model_adapters.DEFAULT_MAX_TOKENS)
+    answer = model_adaptor.generate(prompt,
+                                    temperature=model_adapters.DEFAULT_TEMPERATURE,
+                                    max_new_tokens=model_adapters.DEFAULT_MAX_TOKENS,
+                                    )
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer
@@ -3224,22 +3271,26 @@ async def ask_model_only(
     *,
     verbose: bool = True,
     use_double_prompt: bool = False,
+    prompt_type: int = 0,
 ) -> str:
     model_adaptor_name = model_adaptor.name()
     rag_logger.info(f"ask_model_only() using '{model_adaptor_name}': {question[:80]}...")
 
     q, truncated = truncate_question(question)
 
+    system_prompt = model_adapters.get_system_prompt(prompt_type)
+    rag_logger.info(f"system prompt type: {prompt_type}")
+
     if use_double_prompt:
         prompt = (
-            f"{model_adapters.SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             "Agent Question:\n"
             f"{q}\n"
             f"{q}\n"
         )
     else:
         prompt = (
-            f"{model_adapters.SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             "Agent Question:\n"
             f"{q}\n"
         )
@@ -3249,7 +3300,10 @@ async def ask_model_only(
     if verbose:
         rag_logger.info(f"-- PROMPT (model-only) --\n{prompt}\n-- END PROMPT --")
 
-    answer = model_adaptor.generate(prompt, temperature=0.3, max_new_tokens=768)
+    answer = model_adaptor.generate(prompt,
+                                    temperature=model_adapters.DEFAULT_TEMPERATURE,
+                                    max_new_tokens=model_adapters.DEFAULT_MAX_TOKENS,
+                                    )
 
     if truncated:
         answer = "(Question truncated)\n\n" + answer
