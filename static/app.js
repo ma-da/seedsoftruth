@@ -55,6 +55,9 @@ const CFG = {
   DEV_MODE: true,
 };
 
+let requestInFlight = false;
+let activeJobId = null;
+
 const NOT_READY_MSG = 'Model not ready. We will process your request when it comes online. Please wait for response.'
 
 const SUBSET_COMBOS = [
@@ -1932,9 +1935,9 @@ async function apiStatus({ health = true } = {}) {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify({
-        health: String(health)
+      health: String(health)
     })
-  }, 10000);
+  }, 30000);
 } 
 
 async function apiQueue() {
@@ -1995,6 +1998,8 @@ async function handleChatSubmit(e) {
     'Thinking';
 
   const endStatus = beginStatus(initialLabel);
+  requestInFlight = true;
+  activeJobId = null;  
 
   try {
     // Enforce gate client-side (server enforces too)
@@ -2065,9 +2070,11 @@ async function handleChatSubmit(e) {
         appendMessage('Search request failed (dev). Check server logs.', 'bot');
         pushStatusMessage(String(err?.message || err));
         setReferences([]);
-      } finally {
-        endStatus(); // IMPORTANT: ends spinner + restores default note
-      }
+	  } finally {
+		requestInFlight = false;
+		activeJobId = null;
+		endStatus();
+	  }
 
       return;
     }
@@ -2123,17 +2130,20 @@ async function handleChatSubmit(e) {
     // process queued up message
     //if ((err.status) == 503 && err.error.includes('queued')) {
     if (err.status == 503) {
-        const job_id = err.job_id ?? null;
-        if (job_id) {
-            console.log("Chat message was queued with job_id: " + job_id)
-        } else {
-            console.log("Chat queued message had no job_id was present. could not process message.")
-        }
+      const job_id = err.job_id ?? null;
+      activeJobId = job_id;
 
-        appendMessage(NOT_READY_MSG, 'bot', job_id);
-        pushStatusMessage(NOT_READY_MSG);
-        setEndpointStatus('starting');
-        return;
+      if (job_id) {
+        console.log("Chat message was queued with job_id: " + job_id);
+      } else {
+        console.log("Chat queued message had no job_id.");
+      }
+
+      // Keep the chat UI stable; show the queue/wait message once.
+      appendMessage(NOT_READY_MSG, 'bot', job_id);
+      pushStatusMessageDedup(NOT_READY_MSG, "queued");
+      setEndpointStatus('starting');
+      return;
     }
 
     if (err?.status === 403) {
@@ -2379,11 +2389,9 @@ let lastHealthCheckAt = 0;
 async function refreshStatusOnce(sendHealth = false) {
   try {
     const now = Date.now();
-    const doHealth = sendHealth || (now - lastHealthCheckAt) > 60_000; // every 60s
+    const doHealth = sendHealth || (now - lastHealthCheckAt) > 60_000;
 
-    // let queue refresh handle health checking
-    //console.log("refreshStatusOnce: doing health? " + doHealth)
-    const data = await apiStatus({health: doHealth})
+    const data = await apiStatus({ health: doHealth });
 
     if (typeof data?.unlocked === 'boolean') setModeAccess(data.unlocked);
 
@@ -2392,23 +2400,31 @@ async function refreshStatusOnce(sendHealth = false) {
     const modelReady = data?.model_ready === true;
 
     if (doHealth && hasModelReady) lastHealthCheckAt = now;
-    //console.log("refreshStatusOnce " + sendHealth + ", hasModelReady " + hasModelReady + ", modelReady " + modelReady)
 
-	if (doHealth && typeof data?.model_ready === "boolean") {
-	  pushStatusMessageDedup(
-		`Model health: ${data.model_ready ? "OK" : "not ready"}`,
-		"model"
-	  );
-	}
+    // During an active request, do NOT let polling replace the main UI state.
+    // Only update the endpoint chip if the endpoint is actually healthy.
+    if (requestInFlight) {
+      if (indexReady && hasModelReady && modelReady) {
+        setEndpointStatus('ready');
+        els.endpointLabel.textContent = 'Endpoint Ready';
+        els.endpointChip.textContent = 'healthy';
+      }
+      return;
+    }
 
-    // endpoint status only updated when there a health status is done
+    if (doHealth && typeof data?.model_ready === "boolean") {
+      pushStatusMessageDedup(
+        `Model health: ${data.model_ready ? "OK" : "not ready"}`,
+        "model"
+      );
+    }
+
     if (indexReady && hasModelReady && modelReady) {
       setEndpointStatus('ready');
       els.endpointLabel.textContent = 'Endpoint Ready';
       els.endpointChip.textContent = 'healthy';
     } else if (indexReady && hasModelReady && !modelReady) {
       setEndpointStatus('starting');
-
       els.endpointLabel.textContent = 'Index ready, model warming…';
       els.endpointChip.textContent = 'warming';
     } else if (hasModelReady) {
@@ -2417,25 +2433,29 @@ async function refreshStatusOnce(sendHealth = false) {
       els.endpointChip.textContent = 'starting';
     }
   } catch (err) {
-    console.error("problem in refreshStatusOnce: ", err.message)
-    setEndpointStatus('off');
+    console.error("problem in refreshStatusOnce: ", err.message);
+
+    // Don't flip to "off" while a real request is in flight.
+    if (!requestInFlight) {
+      setEndpointStatus('off');
+    }
   }
 }
 
 async function refreshQueueOnce() {
   try {
-    const data = await apiQueue({ health: false });  // let status line handle health
+    const data = await apiQueue({ health: false }); // let status line handle health
 
     const q = Number(data?.queries_in_line ?? 0);
     setQueueStatus(q);
 
     // Optional: show extra info as a status message
-	if (typeof data?.resps_in_line === "number") {
-	  pushStatusMessageDedup(
-		`Queue: ${q} waiting • ${data.resps_in_line} responses pending`,
-		"queue"
-	  );
-	}
+    if (typeof data?.resps_in_line === "number") {
+      pushStatusMessageDedup(
+        `Queue: ${q} waiting • ${data.resps_in_line} responses pending`,
+        "queue"
+      );
+    }
 
     // queue resp message may contain the results of delayed chat messages
     let delayed_resp = null;
@@ -2445,7 +2465,7 @@ async function refreshQueueOnce() {
       const trimmed = raw.trim();
       if (trimmed) {
         try {
-          //console.log("found outgoing queue resp. parsing...")
+          // console.log("found outgoing queue resp. parsing...")
           delayed_resp = JSON.parse(trimmed);
         } catch (e) {
           console.error("Failed to parse outgoing_resp", e, trimmed);
@@ -2456,19 +2476,21 @@ async function refreshQueueOnce() {
     }
 
     if (delayed_resp) {
-        //console.log("refreshQueueOnce Got related resp: " + delayed_resp)
-        processQueuedMsg(delayed_resp.job_id, delayed_resp.reply)
+      // console.log("refreshQueueOnce got related resp:", delayed_resp);
+      processQueuedMsg(delayed_resp.job_id, delayed_resp.reply);
     }
   } catch (e) {
-    console.error("refreshQueueOnce error: ", e.message)
-    setEndpointStatus('off');
-    // show unknown rather than lying with “0”
-    if (els.queueCountEl) els.queueCountEl.textContent = "—";
-    if (els.queueEtaEl) els.queueEtaEl.textContent = "—";
-	pushStatusMessageDedup(
-	  "Queue check failed (endpoint unreachable).",
-	  "queue-error"
-	);
+    console.error("refreshQueueOnce error:", e.message);
+
+    if (!requestInFlight) {
+      setEndpointStatus("off");
+      if (els.queueCountEl) els.queueCountEl.textContent = "—";
+      if (els.queueEtaEl) els.queueEtaEl.textContent = "—";
+      pushStatusMessageDedup(
+        "Queue check failed (endpoint unreachable).",
+        "queue-error"
+      );
+    }
   }
 }
 
@@ -2479,10 +2501,16 @@ function checkStatusAndQueue(sendHealth = true) {
   refreshQueueOnce();
 }
 
-// Use this method if we want to do continual polling
+// continual polling with improved safety
 function startPolling() {
-  setInterval(refreshQueueOnce, CFG.QUEUE_POLL_MS);
-  setInterval(refreshStatusOnce, CFG.STATUS_POLL_MS);
+  setInterval(() => {
+    if (requestInFlight || activeJobId) {
+      refreshQueueOnce();
+      refreshStatusOnce();
+    } else {
+      refreshStatusOnce(false);
+    }
+  }, Math.min(CFG.QUEUE_POLL_MS, CFG.STATUS_POLL_MS));
 }
 
 
@@ -2682,7 +2710,7 @@ function init() {
   window.setReferences = setReferences;
   window.openFeedbackModal = openFeedbackModal;
   window.pushStatusMessage = pushStatusMessage;
-
+  
   // enable sim adapter only for devmode
   if (CFG.DEV_MODE) {
     const select = document.getElementById('model-type');
@@ -2690,7 +2718,7 @@ function init() {
     simOption.textContent ='Sim Adapter (testing)'
     simOption.value = 'sim'
     select.appendChild(simOption);
-  }
+  }  
 }
 
 document.addEventListener('DOMContentLoaded', init);
