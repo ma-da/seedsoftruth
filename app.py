@@ -766,7 +766,7 @@ def api_chat():
 
     prompt_type = payload.get("prompt_type", None)
     if prompt_type is None:
-        rag_algo_type = 0
+        prompt_type = 0
     else:
         prompt_type = int(prompt_type) - 1
         if prompt_type < 0 or prompt_type >= len(model_prompts.MODEL_SYSTEM_PROMPTS):

@@ -86,6 +86,7 @@ class SimpleUserRateLimiter:
         last_time = self.user_data.get(user_id)
 
         if last_time is None:
+            self.user_data[user_id] = curr_time
             return True
         else:
             assert curr_time >= last_time  # if not true, then its nonsensical
