@@ -1,0 +1,52 @@
+variant,qi,probe,query,n_results,latency_ms,no_result,top1_score,mrr,map,recall@5,precision@5,ndcg@5,recall@10,precision@10,ndcg@10
+1,0,0,glyphosate cancer Monsanto lawsuit,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,1,0,CIA covert operations secrecy,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,2,0,tell me about death squads in Haiti,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,3,0,Describe the activities and background of David Ferrie. Why did investigators view him as an important figure in the New Orleans context surrounding the Kennedy assassination?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,4,0,Do vaccines cause autism or cancer?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,5,0,Did Jeffrey Epstein have connections to the cia or mossad?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,6,0,what is the relationship between cointelpro and the cia project chaos?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,7,0,is there good evidence of ufo uap et visitation?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,12,0,Who killed JFK?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,13,0,Who killed Gandhi?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,14,0,Is psychic phenomena real?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,15,0,How can we reform government?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,16,0,How did Building 7 fall during 9/11?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,8,1,at what temperature does cadmium boil?,0,-1.0,1.0,nan,,,,,,,,
+1,9,1,what is the best region in Switzerland for skiing,0,-1.0,1.0,nan,,,,,,,,
+1,10,1,what is the airspeed velocity of a swallow,0,-1.0,1.0,nan,,,,,,,,
+1,11,1,how long does it take to rig a schooner,0,-1.0,1.0,nan,,,,,,,,
+2,0,0,glyphosate cancer Monsanto lawsuit,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,1,0,CIA covert operations secrecy,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,2,0,tell me about death squads in Haiti,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,3,0,Describe the activities and background of David Ferrie. Why did investigators view him as an important figure in the New Orleans context surrounding the Kennedy assassination?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,4,0,Do vaccines cause autism or cancer?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,5,0,Did Jeffrey Epstein have connections to the cia or mossad?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,6,0,what is the relationship between cointelpro and the cia project chaos?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,7,0,is there good evidence of ufo uap et visitation?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,12,0,Who killed JFK?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,13,0,Who killed Gandhi?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,14,0,Is psychic phenomena real?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,15,0,How can we reform government?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,16,0,How did Building 7 fall during 9/11?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,8,1,at what temperature does cadmium boil?,0,-1.0,1.0,nan,,,,,,,,
+2,9,1,what is the best region in Switzerland for skiing,0,-1.0,1.0,nan,,,,,,,,
+2,10,1,what is the airspeed velocity of a swallow,0,-1.0,1.0,nan,,,,,,,,
+2,11,1,how long does it take to rig a schooner,0,-1.0,1.0,nan,,,,,,,,
+3,0,0,glyphosate cancer Monsanto lawsuit,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,1,0,CIA covert operations secrecy,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,2,0,tell me about death squads in Haiti,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,3,0,Describe the activities and background of David Ferrie. Why did investigators view him as an important figure in the New Orleans context surrounding the Kennedy assassination?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,4,0,Do vaccines cause autism or cancer?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,5,0,Did Jeffrey Epstein have connections to the cia or mossad?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,6,0,what is the relationship between cointelpro and the cia project chaos?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,7,0,is there good evidence of ufo uap et visitation?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,12,0,Who killed JFK?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,13,0,Who killed Gandhi?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,14,0,Is psychic phenomena real?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,15,0,How can we reform government?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,16,0,How did Building 7 fall during 9/11?,0,-1.0,1.0,nan,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,8,1,at what temperature does cadmium boil?,0,-1.0,1.0,nan,,,,,,,,
+3,9,1,what is the best region in Switzerland for skiing,0,-1.0,1.0,nan,,,,,,,,
+3,10,1,what is the airspeed velocity of a swallow,0,-1.0,1.0,nan,,,,,,,,
+3,11,1,how long does it take to rig a schooner,0,-1.0,1.0,nan,,,,,,,,
