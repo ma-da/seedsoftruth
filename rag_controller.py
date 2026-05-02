@@ -3700,26 +3700,17 @@ async def ask(
             f"{q}\n\n"
         )
 
-    # DOCUMENTS section. When v4's min-gate (or any retrieval path) declines,
-    # `context` is empty — tell the model so it doesn't synthesize from
-    # training data and pretend it came from the corpus.
-    docs_present = bool(str(context).strip())
-    if docs_present:
+    # DOCUMENTS section is included only when retrieval produced something.
+    # When `context` is empty (e.g., v4's min-gate declined), no preamble is
+    # added at all — the model just sees the system prompt + question and
+    # is free to answer from general knowledge per the system prompt's rules.
+    if str(context).strip():
         docs_block = (
-            "DOCUMENTS — corpus excerpts you may cite. Each <doc> block has an "
-            "id attribute; cite inline as [doc <id>] when referencing claims "
-            "from these documents. Do NOT cite documents you are not given.\n"
+            "Documents (use if helpful, otherwise ignore):\n"
             f"{context}"
         )
     else:
-        docs_block = (
-            "DOCUMENTS — none retrieved for this question. The corpus has no "
-            "relevant material; if the system prompt has a 'true absence' or "
-            "'no evidence' rule, follow it. Otherwise, state plainly that the "
-            "corpus contains no relevant material on this topic before "
-            "answering from general knowledge with that caveat made clear. "
-            "Do NOT fabricate document citations.\n"
-        )
+        docs_block = ""
 
     prompt = f"{system_prompt}\n\n{question_block}{docs_block}"
 
