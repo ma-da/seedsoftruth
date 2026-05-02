@@ -88,6 +88,14 @@ MAX_QUESTION_WORDS = 400
 DEFAULT_TOP_K = int(os.getenv("TRINEDAY_TOP_K", "10"))
 ENABLE_MIN_GATING = False
 
+# v4 min-gate: top-1 BM25 floor below which queries are declined.
+# Calibrated empirically via eval/calibrate_floor.py against the in-domain /
+# probe split — at 17.0 we catch 3 of 4 probes (cadmium, schooner, swallow)
+# with at most 1/13 in-domain false-decline ("How can we reform government?").
+# Switzerland slips through on score alone and is caught by the second condition
+# (no canonical entities + broad-OR FTS fallback) inside _min_gate.
+MIN_GATE_SCORE_FLOOR = float(os.getenv("MIN_GATE_SCORE_FLOOR", "17.0"))
+
 RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "sqlite_hybrid")
 HYBRID_DB_PATH = Path(os.getenv("HYBRID_DB_PATH", "./data/gamma_master_hybrid_fts_stage2.db"))
 ENTITY_CANON_MAP_PATH = Path(
@@ -140,6 +148,7 @@ class QueuedJob:
     model_type: str
     prompt: str
     subsets: List[str] | None = None
+    rag_algo_choice: int = 0
 
 
 @dataclass_json
@@ -272,10 +281,23 @@ def build_entity_match_query(entity_terms: List[str], require_all: bool = True) 
     return (" AND " if require_all else " OR ").join(cleaned)
 
 
-def extract_canonical_entity_terms(query: str, state: RetrievalState) -> List[str]:
+def extract_canonical_entity_terms_typed(
+    query: str, state: RetrievalState
+) -> List[Tuple[str, str]]:
+    """
+    Like extract_canonical_entity_terms but preserves the entity category for
+    each term. Returns a list of (entity_term, category) pairs. Categories
+    come from _SPACY_TO_CATEGORY ("persons" / "organizations" / "locations" /
+    "events" / "works" / "dates").
+
+    Used by v4's min-gate to distinguish strong entity signals (persons /
+    organizations / events) from weak signals (locations) — a query whose
+    only entity match is a country name like "Switzerland" should be treated
+    as if it has no entities for gating purposes.
+    """
     doc = state.nlp(query)
     seen = set()
-    out: List[str] = []
+    out: List[Tuple[str, str]] = []
 
     for ent in doc.ents:
         category = _SPACY_TO_CATEGORY.get(ent.label_)
@@ -291,10 +313,15 @@ def extract_canonical_entity_terms(query: str, state: RetrievalState) -> List[st
         entity_term = canonical_to_entity_term(canonical)
 
         if entity_term and entity_term not in seen:
-            out.append(entity_term)
+            out.append((entity_term, category))
             seen.add(entity_term)
 
     return out
+
+
+def extract_canonical_entity_terms(query: str, state: RetrievalState) -> List[str]:
+    """Flat-list view of extract_canonical_entity_terms_typed (backward-compat)."""
+    return [term for term, _category in extract_canonical_entity_terms_typed(query, state)]
 
 
 # ------------------ RETRIEVAL TEXT CLEANING ------------------
@@ -488,6 +515,27 @@ def _to_term_set(query: str) -> set[str]:
     q = (query or "").lower()
     q = re.sub(r"[^a-z0-9\s]", " ", q)
     return {w for w in q.split() if len(w) > 2}
+
+
+# Function words and interrogatives that should not contribute to query/doc
+# token-overlap counts. Used by build_context_v2 to avoid the "one-token
+# match on a polysemous word" failure mode (e.g., a query like "Who killed
+# JFK?" matching JFK-Airport sentences via the lone token "jfk").
+_QUERY_STOPWORDS: frozenset = frozenset({
+    "who", "what", "when", "where", "why", "how", "which", "whom",
+    "is", "are", "was", "were", "be", "being", "been", "am",
+    "do", "does", "did", "doing", "done",
+    "have", "has", "had", "having",
+    "can", "could", "should", "would", "will", "may", "might", "must", "shall",
+    "the", "and", "but", "not", "nor",
+    "of", "for", "with", "into", "from", "about", "between", "among",
+    "this", "that", "these", "those", "such",
+    "they", "them", "their", "theirs",
+    "you", "your", "yours", "our", "ours",
+    "tell", "show", "explain", "describe", "give", "list",
+    "any", "all", "each", "every", "both", "either", "neither", "some",
+    "than", "then", "very", "much", "more", "most", "less",
+})
 
 
 def _tokenize_simple(t: str) -> List[str]:
@@ -2825,6 +2873,175 @@ def _hybrid_search_sqlite3(
 
     return results
 
+# ------------------ V4: MIN-GATE WRAPPER + HELPERS ------------------
+
+def _detect_fts_branch(state: RetrievalState, fulltext_query: str) -> str:
+    """
+    Determine which FTS branch (phrase / strict_and / broad_or / none) would
+    have produced the first non-empty match for `fulltext_query`. Mirrors the
+    fallback ladder inside _hybrid_search_sqlite{,2,3} but only runs LIMIT 1
+    probes — total cost is a few ms per call.
+
+    Used by the v4 min-gate's second condition: queries with no canonical
+    entities AND only broad-OR matches are very likely off-corpus probes.
+    """
+    raw = str(fulltext_query or "").strip()
+    if not raw:
+        return "none"
+
+    conn = _get_sqlite_conn(state)
+    cur = conn.cursor()
+
+    phrase_q = _build_phrase_query(raw)
+    if phrase_q:
+        row = cur.execute(
+            "SELECT 1 FROM fulltext_fts WHERE fulltext_fts MATCH ? LIMIT 1",
+            (phrase_q,),
+        ).fetchone()
+        if row:
+            return "phrase"
+
+    strict_q = build_fulltext_query(raw, require_all=True)
+    if strict_q:
+        row = cur.execute(
+            "SELECT 1 FROM fulltext_fts WHERE fulltext_fts MATCH ? LIMIT 1",
+            (strict_q,),
+        ).fetchone()
+        if row:
+            return "strict_and"
+
+    broad_q = build_fulltext_query(raw, require_all=False)
+    if broad_q:
+        row = cur.execute(
+            "SELECT 1 FROM fulltext_fts WHERE fulltext_fts MATCH ? LIMIT 1",
+            (broad_q,),
+        ).fetchone()
+        if row:
+            return "broad_or"
+
+    return "none"
+
+
+def _min_gate(
+    *,
+    entity_terms: List[str],
+    fts_branch: str,
+    top1_score: float,
+    score_floor: float,
+) -> Tuple[bool, str]:
+    """
+    Two-condition min-gate.
+
+    Returns (passed, reason) where reason is one of:
+        "pass"
+        "no_results"                    — retrieval returned nothing
+        "score_below_floor"             — top-1 BM25 < floor (catches cadmium/schooner/swallow probes
+                                          and very low-confidence in-domain queries)
+        "no_entities_broad_or_only"     — no canonical entities matched AND the FTS branch fell
+                                          through to broad-OR (catches the Switzerland-style probes
+                                          where score is high but match is incidental)
+    """
+    if top1_score is None or (isinstance(top1_score, float) and math.isnan(top1_score)):
+        return False, "no_results"
+    if float(top1_score) < float(score_floor):
+        return False, "score_below_floor"
+    if not entity_terms and fts_branch == "broad_or":
+        return False, "no_entities_broad_or_only"
+    return True, "pass"
+
+
+def _hybrid_search_sqlite4(
+    state: RetrievalState,
+    *,
+    entity_terms: List[str],
+    fulltext_query: str,
+    top_k: int,
+    require_all_entities: bool = True,
+    subsets: List[str] = None,
+    score_floor: float = MIN_GATE_SCORE_FLOOR,
+    non_location_entity_terms: Optional[List[str]] = None,
+    meta_out: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    v4 = v2's retrieval + a query-level min-gate.
+
+    If the gate passes, returns v2's ranked results unchanged. If the gate
+    declines, returns []. Optional `meta_out` dict (mutated in place) is
+    populated with gate decision metadata so callers can surface it in
+    API responses or logs.
+
+    Parameters
+    ----------
+    entity_terms
+        All canonical entity terms — used for v2's underlying entity-FTS
+        retrieval (locations included; we still want them to *match* docs).
+    non_location_entity_terms
+        Filtered list excluding location-typed entities. Used by the gate's
+        condition-B check ("no entities + broad-OR only"). When `None` (e.g.,
+        legacy callers), defaults to `entity_terms` and the gate behaves like
+        the un-refined version.
+    """
+    results = _hybrid_search_sqlite2(
+        state,
+        entity_terms=entity_terms,
+        fulltext_query=fulltext_query,
+        top_k=top_k,
+        require_all_entities=require_all_entities,
+        subsets=subsets,
+    )
+
+    # Top-1 BM25 score from v2's merged ranking (NaN if no results).
+    top1: float = float("nan")
+    if results:
+        try:
+            v = results[0].get("score_bm25")
+            if v is None:
+                v = results[0].get("score")
+            top1 = float(v) if v is not None else float("nan")
+        except (TypeError, ValueError):
+            top1 = float("nan")
+
+    fts_branch = _detect_fts_branch(state, fulltext_query)
+    n_ent = len(entity_terms or [])
+    # Locations are a weak entity signal for declassified/conspiracy corpora —
+    # "Switzerland" or "Cuba" mentioned alone shouldn't keep an off-topic query
+    # alive when broad-OR is the only branch that matched. The gate uses the
+    # non-location count so condition B fires for location-only queries.
+    nlet = non_location_entity_terms if non_location_entity_terms is not None else entity_terms
+    n_non_loc = len(nlet or [])
+
+    passed, reason = _min_gate(
+        entity_terms=nlet,
+        fts_branch=fts_branch,
+        top1_score=top1,
+        score_floor=score_floor,
+    )
+
+    if meta_out is not None:
+        meta_out["gate_decision"] = "pass" if passed else "decline"
+        meta_out["gate_reason"] = reason
+        meta_out["top1_score"] = None if math.isnan(top1) else top1
+        meta_out["n_canonical_entities"] = n_ent
+        meta_out["n_non_location_entities"] = n_non_loc
+        meta_out["fts_branch_used"] = fts_branch
+        meta_out["score_floor"] = float(score_floor)
+        meta_out["pre_gate_n_results"] = len(results)
+
+    if not passed:
+        top1_str = "nan" if math.isnan(top1) else f"{top1:.2f}"
+        rag_logger.info(
+            "v4 min_gate DECLINED: reason=%s top1=%s n_ent=%d n_non_loc=%d fts_branch=%s pre_n=%d",
+            reason, top1_str, n_ent, n_non_loc, fts_branch, len(results),
+        )
+        return []
+
+    rag_logger.info(
+        "v4 min_gate PASS: top1=%.2f n_ent=%d n_non_loc=%d fts_branch=%s n=%d",
+        top1, n_ent, n_non_loc, fts_branch, len(results),
+    )
+    return results
+
+
 # ------------------ SEARCH REFERENCES SKELETON ------------------
 
 async def search_references(
@@ -2846,8 +3063,15 @@ async def search_references(
     entity_source = (entity_source_query or q).strip()
     fulltext_source = (fulltext_query or q).strip()
 
-    entity_terms = extract_canonical_entity_terms(entity_source, state)
-    rag_logger.info(f"search_references entity_terms={entity_terms}, subsets={subsets}, rag_algo_choice={rag_algo_choice}")
+    typed_entity_terms = extract_canonical_entity_terms_typed(entity_source, state)
+    entity_terms = [t for t, _ in typed_entity_terms]
+    non_location_entity_terms = [t for t, cat in typed_entity_terms if cat != "locations"]
+    rag_logger.info(
+        f"search_references entity_terms={entity_terms} (non_loc={non_location_entity_terms}), "
+        f"subsets={subsets}, rag_algo_choice={rag_algo_choice}"
+    )
+
+    gate_meta: Optional[Dict[str, Any]] = None  # populated only for v4
 
     match rag_algo_choice:
         case 1:
@@ -2877,6 +3101,18 @@ async def search_references(
                 require_all_entities=True if entity_terms else False,
                 subsets=subsets,
             )
+        case 4:
+            gate_meta = {}
+            results = _hybrid_search_sqlite4(
+                state,
+                entity_terms=entity_terms,
+                non_location_entity_terms=non_location_entity_terms,
+                fulltext_query=fulltext_source,
+                top_k=int(top_k),
+                require_all_entities=True if entity_terms else False,
+                subsets=subsets,
+                meta_out=gate_meta,
+            )
         case _:
             results = _hybrid_search_sqlite(
                 state,
@@ -2887,12 +3123,16 @@ async def search_references(
                 subsets=subsets,
             )
 
-    return {
+    out: Dict[str, Any] = {
         "query": query,
         "num_results": len(results),
         "results": results,
         "message": f"Found {len(results)} result(s).",
     }
+    # v4 attaches gate metadata; older variants leave these absent.
+    if gate_meta:
+        out.update(gate_meta)
+    return out
 
 
 # ------------------ CONTEXT BUILD ------------------
@@ -3041,6 +3281,226 @@ def build_context_improved(
         )
         blocks.append(block)
 
+    return "\n".join(blocks)
+
+
+def build_context_v2(
+    docs: List[Dict[str, Any]],
+    query: str,
+    *,
+    state: Optional[RetrievalState] = None,
+    context_k: int = 10,
+    max_snips_per_doc: int = 5,
+    max_sent_per_doc: int = 50,
+    window_radius: int = 1,
+    min_sentence_overlap: int = 2,
+    min_doc_kept_sentences: int = 2,
+    total_snippet_budget: int = 15,
+) -> str:
+    """
+    Snippet extractor with global (cross-doc) snippet selection.
+
+    Pipeline:
+
+      Phase 1 — per-doc sentence scoring + doc-level filter
+        Each candidate doc (up to `context_k`) is split into sentences. Each
+        sentence is scored on filtered query-term overlap (with stopwords
+        stripped) plus a bonus for canonical-entity matches (when `state`
+        is provided). A sentence "qualifies" iff overlap >= min_sentence_overlap
+        OR it contains a canonical entity. A doc is kept only if at least
+        `min_doc_kept_sentences` of its sentences qualify — this filter
+        catches polysemous-match noise (e.g., JFK-Airport docs for a JFK
+        assassination query).
+
+      Phase 2 — global snippet selection
+        All qualifying sentences from all kept docs go into a single global
+        pool, sorted by score. The top `total_snippet_budget` are picked,
+        respecting a per-doc cap of `max_snips_per_doc` so one verbose doc
+        can't dominate.
+
+      Phase 3 — regroup, expand windows, dedup
+        Selected sentence indices are regrouped by doc. Each is expanded
+        into a window of `window_radius` neighboring sentences; overlapping
+        windows in the same doc merge. Trigram-level dedup runs across
+        all final blocks.
+
+    Three behavior changes from build_context_improved this addresses:
+
+      1. Stopword filter on query terms. "who", "what", "the", "is" and
+         friends are stripped before token-overlap matching, so they don't
+         pad relevance scores on unrelated content.
+
+      2. Stricter retention via canonical-entity awareness. A single-token
+         match on a polysemous word like "jfk" no longer suffices — the
+         sentence needs either ≥2 query-term overlap OR a canonical-entity
+         hit (which disambiguates JFK-the-person from JFK-the-airport).
+
+      3. Global snippet selection. Instead of a fixed quota per doc, the
+         best content surfaces from across all kept docs. A doc with one
+         exceptional sentence outranks a doc with five mediocre ones.
+
+    `state` is optional. When omitted, the canonical-entity path is skipped
+    — sentences must clear the overlap threshold on their own. Output
+    format is unchanged: a sequence of
+    <doc id="..." url="..." score="..."><snippets>...</snippets></doc> blocks.
+    """
+    raw_terms = _to_term_set(query)
+    terms = {t for t in raw_terms if t not in _QUERY_STOPWORDS}
+    # If the query was entirely stopwords (rare), fall back to the unfiltered
+    # set rather than retaining nothing.
+    if not terms:
+        terms = raw_terms
+
+    # Canonical entity tokens from the query (lowercase, underscore-split).
+    canonical_terms: set = set()
+    if state is not None:
+        try:
+            for ent in extract_canonical_entity_terms(query, state):
+                for token in ent.replace("_", " ").lower().split():
+                    if len(token) > 2:
+                        canonical_terms.add(token)
+        except Exception as e:
+            rag_logger.warning(f"build_context_v2: entity extraction failed: {e}")
+
+    rag_logger.info(
+        f"build_context_v2: filtered_terms={sorted(terms)} "
+        f"canonical_terms={sorted(canonical_terms)} "
+        f"context_k={context_k} budget={total_snippet_budget} "
+        f"min_overlap={min_sentence_overlap} min_doc_keep={min_doc_kept_sentences}"
+    )
+
+    picked = (docs or [])[: int(context_k)]
+
+    # ---- Phase 1: per-doc sentence scoring + doc-level filter ----
+    # passing_docs[i] = {"doc": ..., "sents": [...], "qualifying": [(sent_idx, score), ...]}
+    passing_docs: Dict[int, Dict[str, Any]] = {}
+
+    for i, d in enumerate(picked):
+        text = (d.get("text") or d.get("snippet") or "").strip()
+        if not text:
+            continue
+
+        text = rag_cleaner.clean_text_for_rag(text)
+        sents = _sentence_split(text)[: int(max_sent_per_doc)]
+        if not sents:
+            continue
+
+        qualifying: List[Tuple[int, int]] = []
+        canon_hits = 0
+        for idx, s in enumerate(sents):
+            sent_tokens = set(_tokenize_simple(s.lower()))
+            overlap = len(terms & sent_tokens)
+            has_canon = bool(canonical_terms & sent_tokens)
+            if overlap >= min_sentence_overlap or has_canon:
+                # Sort score: term overlap + bonus for canonical-entity match.
+                rank_score = overlap + (2 if has_canon else 0)
+                qualifying.append((idx, rank_score))
+                if has_canon:
+                    canon_hits += 1
+
+        if len(qualifying) < int(min_doc_kept_sentences):
+            doc_id_hint = (d.get("row_id") or d.get("title") or "?")[:24]
+            rag_logger.info(
+                f"build_context_v2: drop doc {i+1} ({doc_id_hint}) — "
+                f"{len(qualifying)} sentences passed (need {min_doc_kept_sentences}, "
+                f"canon_hits={canon_hits})"
+            )
+            continue
+
+        passing_docs[i] = {"doc": d, "sents": sents, "qualifying": qualifying}
+
+    if not passing_docs:
+        rag_logger.info(f"build_context_v2: no docs survived filter (of {len(picked)} candidates)")
+        return ""
+
+    # ---- Phase 2: global snippet selection ----
+    # Flatten all qualifying sentences from all passing docs, sort globally,
+    # then pick top N respecting per-doc cap.
+    global_pool: List[Tuple[int, int, int]] = []  # (doc_idx, sent_idx, score)
+    for doc_idx, info in passing_docs.items():
+        for sent_idx, score in info["qualifying"]:
+            global_pool.append((doc_idx, sent_idx, score))
+    global_pool.sort(key=lambda t: -t[2])  # highest score first
+
+    selected_by_doc: Dict[int, List[int]] = {}  # doc_idx -> [sent_idx, ...]
+    selected_count = 0
+    for doc_idx, sent_idx, _score in global_pool:
+        if selected_count >= int(total_snippet_budget):
+            break
+        cur = selected_by_doc.setdefault(doc_idx, [])
+        if len(cur) >= int(max_snips_per_doc):
+            continue
+        cur.append(sent_idx)
+        selected_count += 1
+
+    rag_logger.info(
+        f"build_context_v2: global pool size={len(global_pool)}, "
+        f"selected={selected_count}/{total_snippet_budget} across "
+        f"{len(selected_by_doc)} docs"
+    )
+
+    # ---- Phase 3: regroup, expand windows, dedup, emit ----
+    global_tris: set = set()
+    blocks: List[str] = []
+
+    # Preserve the original doc order from `picked` so the prompt shows
+    # higher-ranked retrieval results first.
+    for doc_idx in sorted(selected_by_doc.keys()):
+        info = passing_docs[doc_idx]
+        d = info["doc"]
+        sents = info["sents"]
+        sent_indices = sorted(set(selected_by_doc[doc_idx]))
+
+        # Expand each chosen sentence into a window of neighbors.
+        windows: List[Tuple[int, int]] = []
+        for idx in sent_indices:
+            start = max(0, idx - window_radius)
+            end = min(len(sents), idx + window_radius + 1)
+            windows.append((start, end))
+        windows.sort()
+
+        # Merge overlapping/adjacent windows.
+        merged: List[List[int]] = []
+        for start, end in windows:
+            if not merged:
+                merged.append([start, end])
+            else:
+                if start <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], end)
+                else:
+                    merged.append([start, end])
+
+        # Trigram dedup across the full prompt's blocks (no near-duplicates).
+        kept_blocks: List[str] = []
+        for start, end in merged:
+            window_text = " ".join(sents[start:end]).strip()
+            toks = _tokenize_simple(window_text)
+            tris = _trigrams(toks)
+            introduce = any(tri not in global_tris for tri in tris)
+            if introduce:
+                kept_blocks.append(window_text)
+                for tri in tris:
+                    global_tris.add(tri)
+
+        if not kept_blocks:
+            continue
+
+        doc_id = d.get("row_id") or d.get("title") or ""
+        url = d.get("source") or ""
+        score_bm25 = d.get("score_bm25") or 0.0
+
+        block = (
+            f'<doc id="{doc_id}" url="{url}" score="{float(score_bm25):.2f}">\n'
+            "<snippets>\n- " + "\n- ".join(kept_blocks) + "\n</snippets>\n"
+            "</doc>"
+        )
+        blocks.append(block)
+
+    rag_logger.info(
+        f"build_context_v2: emitted {len(blocks)} doc blocks from "
+        f"{len(selected_by_doc)} selected (of {len(passing_docs)} passing, "
+        f"{len(picked)} candidates)"
+    )
     return "\n".join(blocks)
 
 
@@ -3198,7 +3658,7 @@ async def ask(
     state: RetrievalState,
     question: str,
     *,
-    context_k: int = 5,
+    context_k: int = 10,
     top_k: int = 10,
     verbose: bool = True,
     use_double_prompt: bool = False,
@@ -3214,35 +3674,59 @@ async def ask(
     t0 = time.time()
     refs = await search_references(state, q, top_k=top_k, verbose=verbose, subsets=subsets, rag_algo_choice=rag_algo_choice)
     docs = refs.get("results", [])
-    context = build_context_improved(docs, q, context_k=context_k)
+    # build_context_v2: stricter filter + canonical-entity awareness — see
+    # the "Who killed JFK?" -> JFK-Airport snippets failure that motivated
+    # this change. Pass `state` so the entity disambiguation path is active.
+    context = build_context_v2(docs, q, state=state, context_k=context_k)
     rag_logger.info(f"chat search_references results: {docs}")
 
     system_prompt = model_adapters.get_system_prompt(prompt_type)
     rag_logger.info(f"system prompt type: {prompt_type}")
 
+    # Self-restatement variant: ask the model to reframe before answering. This
+    # is a real prompting technique (improves coherence on ambiguous questions)
+    # and replaces the prior "double prompt" mode that just typed the question
+    # twice verbatim with no upside.
     if use_double_prompt:
-        prompt = (
-            f"{system_prompt}\n\n"
+        question_block = (
             "Agent Question:\n"
-            f"{q}\n"
             f"{q}\n\n"
-            "DOCUMENTS (internal — do not mention they exist):\n"
+            "Before answering: restate the question in your own words and "
+            "identify what would constitute strong evidence. Then answer.\n\n"
         )
     else:
-        prompt = (
-            f"{system_prompt}\n\n"
+        question_block = (
             "Agent Question:\n"
             f"{q}\n\n"
-            "DOCUMENTS (internal — do not mention they exist):\n"
         )
+
+    # DOCUMENTS section. When v4's min-gate (or any retrieval path) declines,
+    # `context` is empty — tell the model so it doesn't synthesize from
+    # training data and pretend it came from the corpus.
+    docs_present = bool(str(context).strip())
+    if docs_present:
+        docs_block = (
+            "DOCUMENTS — corpus excerpts you may cite. Each <doc> block has an "
+            "id attribute; cite inline as [doc <id>] when referencing claims "
+            "from these documents. Do NOT cite documents you are not given.\n"
+            f"{context}"
+        )
+    else:
+        docs_block = (
+            "DOCUMENTS — none retrieved for this question. The corpus has no "
+            "relevant material; if the system prompt has a 'true absence' or "
+            "'no evidence' rule, follow it. Otherwise, state plainly that the "
+            "corpus contains no relevant material on this topic before "
+            "answering from general knowledge with that caveat made clear. "
+            "Do NOT fabricate document citations.\n"
+        )
+
+    prompt = f"{system_prompt}\n\n{question_block}{docs_block}"
 
     prompt_tokens_len = None
     if verbose:
         prompt_tokens_len = utils.estimate_tokens(prompt)
         rag_logger.info(f"Retrieved context in {time.time() - t0:.2f}s")
-
-
-    prompt = prompt + f"{context}"
 
     if verbose:
         context_tokens_len = utils.estimate_tokens(context)
@@ -3323,8 +3807,15 @@ inflight_users = {}
 inflight_lock = threading.Lock()
 
 
-def queue_job(user_id, job_id, msg, prompt, subsets: List[str]) -> int:
-    queued_job = QueuedJob(user_id, job_id, msg, prompt, subsets)
+def queue_job(
+    user_id,
+    job_id,
+    msg,
+    prompt,
+    subsets: List[str],
+    rag_algo_choice: int = 0,
+) -> int:
+    queued_job = QueuedJob(user_id, job_id, msg, prompt, subsets, rag_algo_choice)
     with job_lock:
         job_queue.append(queued_job)
         return len(job_queue)

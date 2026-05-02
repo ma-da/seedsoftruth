@@ -116,7 +116,8 @@ def call_search(
     shard_k: int = 20,
     subsets: Optional[List[str]] = None,
     timeout: float = 60.0,
-) -> Tuple[List[Dict[str, Any]], float]:
+) -> Tuple[List[Dict[str, Any]], float, Dict[str, Any]]:
+    """Returns (results, latency_ms, response_body). Body carries v4 gate metadata."""
     payload: Dict[str, Any] = {
         "query": query,
         "top_k": top_k,
@@ -133,7 +134,7 @@ def call_search(
     body = r.json()
     if not body.get("ok"):
         raise RuntimeError(f"variant={variant} ok=False: {body.get('error')}")
-    return body.get("results", []) or [], elapsed_ms
+    return (body.get("results", []) or []), elapsed_ms, body
 
 
 def get_doc_id(result: Dict[str, Any], id_field: str) -> Optional[str]:
@@ -352,8 +353,9 @@ def main() -> None:
         with open(raw_path, "w") as f:
             for qi, item in enumerate(eval_set):
                 for variant in variants:
+                    body: Dict[str, Any] = {}
                     try:
-                        results, ms = call_search(
+                        results, ms, body = call_search(
                             args.base_url, item.query, variant,
                             top_k=args.top_k, shard_k=args.shard_k,
                         )
@@ -362,9 +364,17 @@ def main() -> None:
                         results, ms = [], -1.0
                     ranked = [get_doc_id(r, item.id_field) for r in results]
                     ranked = [d for d in ranked if d is not None]
-                    # Capture top-1 BM25 score (used by probe-query metrics).
-                    top1 = float("nan")
-                    if results:
+                    # Top-1 BM25: prefer the body-level field (v4 reports the
+                    # PRE-gate score even when results are declined to []) and
+                    # fall back to results[0] for v1/v2/v3.
+                    top1: float = float("nan")
+                    body_top1 = body.get("top1_score")
+                    if body_top1 is not None:
+                        try:
+                            top1 = float(body_top1)
+                        except (TypeError, ValueError):
+                            top1 = float("nan")
+                    elif results:
                         v = results[0].get("score_bm25")
                         if v is None:
                             v = results[0].get("score")
@@ -384,6 +394,13 @@ def main() -> None:
                         "labels": item.labels,
                         "id_field": item.id_field,
                         "probe": item.probe,
+                        # v4 gate metadata (None / absent for v1/v2/v3)
+                        "gate_decision": body.get("gate_decision"),
+                        "gate_reason": body.get("gate_reason"),
+                        "n_canonical_entities": body.get("n_canonical_entities"),
+                        "n_non_location_entities": body.get("n_non_location_entities"),
+                        "fts_branch_used": body.get("fts_branch_used"),
+                        "pre_gate_n_results": body.get("pre_gate_n_results"),
                     }
                     raw.append(rec)
                     f.write(json.dumps(rec) + "\n")

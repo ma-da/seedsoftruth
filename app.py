@@ -229,7 +229,14 @@ def worker_body():
 
         try:
             app_logger.info(f"Worker chat_with_corpus for model_type {queued_job.model_type} job_id {queued_job.job_id} with user_id {queued_job.user_id}...")
-            answer, docs = chat_with_corpus(queued_job.model_type, queued_job.prompt, top_k=10, use_double_prompt=USE_DOUBLE_PROMPT, subsets=queued_job.subsets)
+            answer, docs = chat_with_corpus(
+                queued_job.model_type,
+                queued_job.prompt,
+                top_k=10,
+                use_double_prompt=USE_DOUBLE_PROMPT,
+                subsets=queued_job.subsets,
+                rag_algo_choice=queued_job.rag_algo_choice,
+            )
 
             # clean up docs of copyrighted material
             cleaned_docs = rag_controller.clean_rag_references(docs)
@@ -673,7 +680,21 @@ def api_search():
         if not isinstance(message, str) or not message.strip():
             message = f"Found {num_results} result(s)."
 
-        return jsonify({
+        # v4 min-gate metadata (absent for v1/v2/v3 — these keys will be missing
+        # from the search_corpus result for non-gated variants).
+        gate_keys = (
+            "gate_decision",
+            "gate_reason",
+            "top1_score",
+            "n_canonical_entities",
+            "n_non_location_entities",
+            "fts_branch_used",
+            "score_floor",
+            "pre_gate_n_results",
+        )
+        gate_payload = {k: results[k] for k in gate_keys if k in results}
+
+        response = {
             "ok": True,
             "query": query,
             "num_results": num_results,
@@ -682,7 +703,9 @@ def api_search():
             "results": cleaned_list,
             "top_k": top_k,
             "shard_k": shard_k,
-        }), 200
+        }
+        response.update(gate_payload)
+        return jsonify(response), 200
 
     except Exception as e:
         # Always return JSON so the frontend sees the real error.
@@ -764,16 +787,28 @@ def api_chat():
     else:
         rag_algo_type = int(rag_algo_type)
 
-    prompt_type = payload.get("prompt_type", None)
-    if prompt_type is None:
+    # prompt_type uses 1-indexed values on the wire (1..N where N = number of
+    # configured system prompts). We subtract 1 to get the internal 0-indexed
+    # offset. Missing / None defaults to the first prompt (V1).
+    n_prompts = len(model_prompts.MODEL_SYSTEM_PROMPTS)
+    raw_prompt_type = payload.get("prompt_type", None)
+    if raw_prompt_type is None:
         prompt_type = 0
     else:
-        prompt_type = int(prompt_type) - 1
-        if prompt_type < 0 or prompt_type >= len(model_prompts.MODEL_SYSTEM_PROMPTS):
-            app_logger.warning(f"Chat request prompt_type was invalid: {model_type}")
+        try:
+            sent = int(raw_prompt_type)
+        except (TypeError, ValueError):
+            app_logger.warning(f"Chat request prompt_type was not an integer: {raw_prompt_type!r}")
             return jsonify({
                 "ok": False,
-                "error": "Field 'prompt_type' was invalid"
+                "error": f"Field 'prompt_type' must be an integer in 1..{n_prompts}",
+            }), 400
+        prompt_type = sent - 1
+        if prompt_type < 0 or prompt_type >= n_prompts:
+            app_logger.warning(f"Chat request prompt_type was out of range: sent={sent}, valid=1..{n_prompts}")
+            return jsonify({
+                "ok": False,
+                "error": f"Field 'prompt_type' must be in 1..{n_prompts}",
             }), 400
 
     # rate limit check. blocks if user sending too frequently.
@@ -808,7 +843,7 @@ def api_chat():
 
         # send wake-up request to model
         rag_controller.send_warmup()
-        rag_controller.queue_job(user_id, job_id, model_type, msg, subsets)
+        rag_controller.queue_job(user_id, job_id, model_type, msg, subsets, rag_algo_type)
 
         return jsonify({
             "ok": False,
@@ -983,17 +1018,38 @@ def api_ab():
     except Exception:
         shard_k, top_k = 20, 10
 
+    # Forward the same rag_algo_type the client sent (defaults to 0 = legacy v1).
+    rag_algo_type = payload.get("rag_algo_type", None)
+    if rag_algo_type is None:
+        rag_algo_type = 0
+    else:
+        try:
+            rag_algo_type = int(rag_algo_type)
+        except (TypeError, ValueError):
+            rag_algo_type = 0
+    rag_algo_choice = rag_algo_type
+
     # TODO: FIX ME LATER
     model_type_a = "hf"
     model_type_b = "hf"
 
     try:
         # A
-        a_answer, a_refs = chat_with_corpus(model_type_a, msg, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        a_answer, a_refs = chat_with_corpus(
+            model_type_a, msg,
+            top_k=top_k, shard_k=shard_k,
+            use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT,
+            rag_algo_choice=rag_algo_choice,
+        )
 
         # B (alternate phrasing prompt)
         b_prompt = msg + "\n\n(Provide an alternate phrasing / approach.)"
-        b_answer, b_refs = chat_with_corpus(model_type_b, b_prompt, top_k=top_k, shard_k=shard_k, use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT)
+        b_answer, b_refs = chat_with_corpus(
+            model_type_b, b_prompt,
+            top_k=top_k, shard_k=shard_k,
+            use_rag=use_rag, use_double_prompt=USE_DOUBLE_PROMPT,
+            rag_algo_choice=rag_algo_choice,
+        )
 
         app_logger.info(f"Marking job {job_id_a} as done in db...")
         db.mark_done(job_id_a, a_answer)

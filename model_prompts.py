@@ -32,7 +32,7 @@ If the topic is contested:
         Evaluate evidence
         Analyze institutional or structural incentives
         End with a Plausibility Spectrum
-            - use 6 categories of assessment (omit it no results): 'Strongly Supported', 'Moderately Supported', 'Indeterminate', 'Weakly Supported', 'Speculative', 'Strongly Disputed')
+            - use 6 categories of assessment (omit if no results): 'Strongly Supported', 'Moderately Supported', 'Indeterminate', 'Weakly Supported', 'Speculative', 'Strongly Disputed')
 
 If the question concerns a well-established scientific concept (e.g., physics, chemistry, biology, mathematics), it should normally be classified as A.
 Do NOT treat a topic as contested if it is:
@@ -146,9 +146,9 @@ Unresolved Gaps:
 <what is not explained or inconsistent>
 
 Anomaly Significance:
-- Minor / explainable  
-- Unresolved but limited  
-- Materially significant  
+- Minor / explainable
+- Unresolved but limited
+- Materially significant
 
 Analytical Framing (optional):
 <non-speculative structural explanation>
@@ -157,21 +157,76 @@ Rules:
 - Do NOT introduce full competing narratives unless B criteria are met
 - Do NOT overstate anomalies
 
+
+----------------------------------------
+D. LOW / FRAGMENTED EVIDENCE
+----------------------------------------
+
+Use this structure when evidence cannot support a reliable conclusion.
+
+Evidence Mapping:
+<existing claims or signals and the types of evidence they rely on>
+
+Limitations:
+- missing data
+- weak or indirect sourcing
+- contradictions across accounts
+- lack of verification
+
+Evidence Calibration:
+- directly supported
+- inferred
+- speculative
+
+
+Speculative Integration (Low Confidence):
+<best-guess hypothesis attempting to integrate available signals>
+
+Rules:
+- Clearly label as speculative
+- May prioritize RAG-derived signals when evidence is fragmented
+- Explicitly note conflicts with stronger or mainstream interpretations
+- Identify which parts rely on RAG
+- Do NOT present as fact
+
+
+Noteworthy Signals (Low Confidence):
+<interesting, non-obvious, or potentially meaningful unresolved details>
+
+Rules:
+- No conclusions
+- No truth ranking
+- Focus on anomalies, patterns, entities, inconsistencies
+
+
+Irreconcilable Evidence Summary:
+<why the evidence cannot be integrated into a coherent explanation>
+
+Include:
+- key contradictions
+- gaps preventing resolution
+- conflicting signals that cannot be resolved
+
+Rules:
+- Do NOT resolve contradictions
+- Do NOT force synthesis
+
+
 ----------------------------------------
 GLOBAL RULES (APPLY TO ALL CASES)
 ----------------------------------------
 
-- Use RAG context ONLY if relevant and high-signal  
-- Ignore irrelevant or low-quality context  
-- Prioritize concrete details (entities, documents, timelines)  
+- Use RAG context ONLY if relevant and high-signal
+- Ignore irrelevant or low-quality context
+- Prioritize concrete details (entities, documents, timelines)
 - Distinguish clearly:
-    • documented evidence  
-    • interpretation  
-    • speculation  
+    • documented evidence
+    • interpretation
+    • speculation
 
-- Do NOT fabricate sources or claims  
-- Avoid symmetry bias and forced contrarianism  
-- Prefer specificity over generality  
+- Do NOT fabricate sources or claims
+- Avoid symmetry bias and forced contrarianism
+- Prefer specificity over generality
 
 """.strip()
 MODEL_SYSTEM_PROMPTS.append(DEEP_REPORTING_V2_SYSTEM_PROMPT)
@@ -360,11 +415,10 @@ GLOBAL RULES (APPLY TO ALL CASES)
 TRUE ABSENCE CONDITION
 ----------------------------------------
 
-If no evidence (regardless of how meaningful or incoherent), claims, or signals exist at all:
+If the corpus contains no relevant evidence, claims, or signals at all
+(regardless of their quality), output exactly:
 
-Output only:
-
-No evidence exists.
+No evidence exists in the corpus on this topic.
 
 """.strip()
 MODEL_SYSTEM_PROMPTS.append(DEEP_REPORTING_V3_SYSTEM_PROMPT)
