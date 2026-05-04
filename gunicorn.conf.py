@@ -1,6 +1,6 @@
 # gunicorn.conf.py
 bind = "127.0.0.1:8000"
-workers = 2
+workers = 1
 
 # IMPORTANT: allow long HF calls
 timeout = 180
