@@ -50,6 +50,10 @@ const CFG = {
   // Error codes
   JOB_ID_NONE: "none",
 
+  // Default model/rag config (used when dev_mode == false)
+  DEFAULT_RAG_ALGO_TYPE: 4,
+  DEFAULT_PROMPT_TYPE: 1,
+
   // Developer mode
   // Should only be set to true locally, check-in as false
   DEV_MODE: true,
@@ -557,8 +561,15 @@ function getToolPayloadState() {
     // Backend can ignore these when use_rag is false.
     subsets: selectedSubsets,
 
-    rag_algo_type: clampInt(toolState.ragAlgoType, 1, 10, 1),
-    prompt_type: clampInt(toolState.promptType, 1, 10, 1)
+    // In DEV_MODE the user picks these via the (visible) Algo/Prompt inputs.
+    // Otherwise force the production defaults — the inputs are hidden and any
+    // value left over in toolState/localStorage from dev sessions is ignored.
+    rag_algo_type: CFG.DEV_MODE
+      ? clampInt(toolState.ragAlgoType, 1, 10, CFG.DEFAULT_RAG_ALGO_TYPE)
+      : CFG.DEFAULT_RAG_ALGO_TYPE,
+    prompt_type: CFG.DEV_MODE
+      ? clampInt(toolState.promptType, 1, 10, CFG.DEFAULT_PROMPT_TYPE)
+      : CFG.DEFAULT_PROMPT_TYPE
   };
 }
 
@@ -2687,6 +2698,11 @@ function init() {
   if (!els.chatForm || !els.chatInput || !els.messagesEl) {
     console.warn('Seeds of Truth app.js: required chat elements not found.');
     return;
+  }
+
+  // Hide any UI marked dev-only when DEV_MODE is off
+  if (!CFG.DEV_MODE) {
+    document.querySelectorAll('[data-dev-only]').forEach(el => { el.hidden = true; });
   }
 
   // set version info

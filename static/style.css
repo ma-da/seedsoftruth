@@ -5,6 +5,13 @@
    ========================================================================== */
 
 
+/* The HTML [hidden] attribute must win over any class-level display rule
+   (e.g. .tools-compact-pair { display: grid }) so el.hidden = true / the
+   `hidden` attribute reliably hides elements. !important is the price for
+   beating equal-specificity class rules without an arms race. */
+[hidden] { display: none !important; }
+
+
 /* ==========================================================================
    1) THEME TOKENS / DESIGN VARIABLES
    ========================================================================== */
