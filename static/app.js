@@ -49,8 +49,6 @@ const CFG = {
 
   // Error codes
   JOB_ID_NONE: "none",
-
-  // Default model/rag config (used when dev_mode == false)
   DEFAULT_RAG_ALGO_TYPE: 4,
   DEFAULT_PROMPT_TYPE: 1,
 
@@ -2010,13 +2008,7 @@ async function handleChatSubmit(e) {
 
   const endStatus = beginStatus(initialLabel);
   requestInFlight = true;
-  activeJobId = null;
-
-  // Placeholder bot message for the chat branch. Created before apiChat so the
-  // user has visible feedback in the main chat thread during the long wait,
-  // then mutated in place when the response (or an error) arrives.
-  let chatBotUI = null;
-  const WAITING_MSG = 'Asking Seeds of Truth AI model... This may take 1-3 minutes...';
+  activeJobId = null;  
 
   try {
     // Enforce gate client-side (server enforces too)
@@ -2117,59 +2109,33 @@ async function handleChatSubmit(e) {
     // chat
     setNoteMessage('Generating response…', { busy: true });
 
-    // Create the placeholder bot bubble immediately and type the waiting
-    // notice into it, so the main chat window shows in-thread feedback for
-    // the entire 1-3 minute LLM wait. The waiting copy itself uses the same
-    // keyboard-typing effect as the final response.
-    chatBotUI = appendBotTypingMessage('', CFG.JOB_ID_NONE);
-    await typeIntoElement(chatBotUI.textEl, WAITING_MSG, {
-      cps: 60,
-      chunkMin: 1,
-      chunkMax: 4,
-      maxTyped: 800,
-    });
-
     const data = await apiChat(payload);
     const reply = data.reply || data.message || data.status || '';
     const job_id = data.job_id || CFG.JOB_ID_NONE;
 
     setNoteMessage('Rendering response…', { busy: true });
 
-    const finalReply = reply || '(no reply)';
+	const finalReply = reply || '(no reply)';
 
-    // Mutate the existing placeholder in place: update job_id, clear the
-    // waiting text, then type the real response with the same typing effect.
-    chatBotUI.textEl.dataset.jobId = job_id;
-    chatBotUI.textEl.textContent = '';
-    await typeIntoElement(chatBotUI.textEl, finalReply, {
-      cps: 60,
-      chunkMin: 1,
-      chunkMax: 4,
-      maxTyped: 800,
-    });
+	// Create placeholder message immediately
+	const botUI = appendBotTypingMessage('', job_id);
 
-    chatBotUI.setSnippet(finalReply);
-    pushTurn(text, finalReply);
+	// Type into the existing message-text element
+	await typeIntoElement(botUI.textEl, finalReply, {
+	  cps: 60,
+	  chunkMin: 1,
+	  chunkMax: 4,
+	  maxTyped: 800,
+	});
+
+	// Ensure feedback uses the final text
+	botUI.setSnippet(finalReply);
+
+	pushTurn(text, finalReply);
 
     setReferences(Array.isArray(data.references) ? data.references : []);
 
   } catch (err) {
-    // Helper: write a bot message either by mutating the existing placeholder
-    // (chat branch — chatBotUI is non-null) or by appending a fresh row
-    // (search/ab branches, or chat errors before the placeholder was created).
-    const writeBotMessage = async (message, jobId) => {
-      if (chatBotUI) {
-        chatBotUI.textEl.dataset.jobId = jobId ?? CFG.JOB_ID_NONE;
-        chatBotUI.textEl.textContent = '';
-        await typeIntoElement(chatBotUI.textEl, message, {
-          cps: 60, chunkMin: 1, chunkMax: 4, maxTyped: 800,
-        });
-        chatBotUI.setSnippet(message);
-      } else {
-        appendMessage(message, 'bot', jobId ?? CFG.JOB_ID_NONE);
-      }
-    };
-
     // process queued up message
     //if ((err.status) == 503 && err.error.includes('queued')) {
     if (err.status == 503) {
@@ -2183,7 +2149,7 @@ async function handleChatSubmit(e) {
       }
 
       // Keep the chat UI stable; show the queue/wait message once.
-      await writeBotMessage(NOT_READY_MSG, job_id);
+      appendMessage(NOT_READY_MSG, 'bot', job_id);
       pushStatusMessageDedup(NOT_READY_MSG, "queued");
       setEndpointStatus('starting');
       return;
@@ -2195,12 +2161,12 @@ async function handleChatSubmit(e) {
       toolState.mode = 'search';
       renderToolState();
       saveToolState();
-      await writeBotMessage('Not today. Search mode only.', CFG.JOB_ID_NONE);
+      appendMessage('Not today. Search mode only.', 'bot', CFG.JOB_ID_NONE);
       pushTurn(text, 'Not today. Search mode only.');
       return;
     }
 
-    await writeBotMessage('Error contacting server. Please try again.', CFG.JOB_ID_NONE);
+    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
     pushStatusMessage(String(err?.message || err));
     setReferences([]);
 
@@ -2700,11 +2666,6 @@ function init() {
     return;
   }
 
-  // Hide any UI marked dev-only when DEV_MODE is off
-  if (!CFG.DEV_MODE) {
-    document.querySelectorAll('[data-dev-only]').forEach(el => { el.hidden = true; });
-  }
-
   // set version info
   initVersion();
 
@@ -2746,6 +2707,10 @@ function init() {
         }
      )
     .catch(() => setModeAccess(false));
+
+  if (!CFG.DEV_MODE) {
+    document.querySelectorAll('[data-dev-only]').forEach(el => { el.hidden = true; });
+  }
 
   // set initial status / queue check on page load
   checkStatusAndQueue(true);
