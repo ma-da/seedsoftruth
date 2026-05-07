@@ -1,11 +1,92 @@
-db
-logs
-test.log
-cookies.txt
-.*.swp
-.idea/
+# ─── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+venv*/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+.eggs/
+pip-wheel-metadata/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ─── Node / frontend tooling ────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Project-specific ───────────────────────────────────────────────────────
+
+# Application database & logs (runtime artifacts; should not be committed)
+db/app.db
+db/app.db-journal
+db/app.db-shm
+db/app.db-wal
+logs/
+*.log
+
+# Corpus databases — large binary files; distribute separately
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+
+# Eval run output (regenerated on each `run_eval.sh`)
+eval/runs/
+
+# Local secrets / env
+.env
+.env.*
+!.env.example
+
+# Manual test scratch
+cookies.txt
+test.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.*.swp
+
+# macOS resource forks
+._*
 ._*.py
 ._*.js
 ._*.html
-*.log
+
+# Python version pin — uncomment to keep tracked, comment to ignore
+# .python-version
+
+# Flask instance folder (if used)
+instance/
+
+# Internal audit notes (move to docs/ if you want them public)
+ALPHA_BLOCKERS.md
