@@ -1,0 +1,16 @@
+# Required dependencies for the Seeds of Truth canonical LoRA trainer.
+# Install with:    pip install -r requirements.txt
+#
+# Unsloth is optional; install with requirements-unsloth.txt for the
+# fast 4-bit / fused-kernel path.
+
+torch>=2.1
+transformers>=4.43
+peft>=0.11.1
+trl>=0.10
+datasets>=2.20
+accelerate>=0.30
+safetensors>=0.4
+huggingface_hub>=0.24
+bitsandbytes>=0.43
+jsonschema>=4.0
