@@ -422,10 +422,11 @@ class SparkCloudflareLLM(LLMStrategy):
         }
 
     def generate_payload(self, prompt: str, *, max_new_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = DEFAULT_TEMPERATURE) -> dict[str, Any]:
+        # TODO: This is hardcoded to use model system prompt 1. Make configurable later.
         return {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": model_prompts.MODEL_SYSTEM_PROMPTS[0]},
                 {"role": "user", "content": prompt},
             ],
             "temperature": float(temperature),
@@ -469,7 +470,7 @@ class SparkCloudflareLLM(LLMStrategy):
                 json={
                     "model": self.model_name,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": model_adapters.SYSTEM_WARMUP},
                         {"role": "user", "content": HF_WARMUP_PROMPT},
                     ],
                     "temperature": 0.1,

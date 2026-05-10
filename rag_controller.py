@@ -3511,6 +3511,10 @@ def is_model_ready(timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
 
 
 def is_model_type_ready(model_type: str, timeout=model_adapters.MODEL_TIMEOUT_SECS) -> bool:
+    # short-term hack
+    if model_type == "spark":
+        return True
+
     model = get_model_type(model_type)
     return utils.do_async_to_sync(lambda: model.is_model_ready(timeout=timeout))()
 

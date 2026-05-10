@@ -2010,6 +2010,12 @@ async function handleChatSubmit(e) {
   requestInFlight = true;
   activeJobId = null;  
 
+  // Placeholder bot message for the chat branch. Created before apiChat so the
+  // user has visible feedback in the main chat thread during the long wait,
+  // then mutated in place when the response (or an error) arrives.
+  let chatBotUI = null;
+  const WAITING_MSG = 'Asking Seeds of Truth AI model... This may take 1-3 minutes...';
+
   try {
     // Enforce gate client-side (server enforces too)
     if (!isUnlocked && (toolState.mode === 'chat' || toolState.mode === 'ab')) {
@@ -2076,8 +2082,9 @@ async function handleChatSubmit(e) {
 		setReferences(refs);
       } catch (err) {
         console.error('[Search] apiSearch failed:', err);
-        appendMessage('Search request failed (dev). Check server logs.', 'bot');
-        pushStatusMessage(String(err?.message || err));
+        const serverMsg = String(err?.message || err || '').trim();
+        appendMessage(serverMsg || 'Search request failed. Check server logs.', 'bot');
+        pushStatusMessage(serverMsg || 'Search request failed.');
         setReferences([]);
 	  } finally {
 		requestInFlight = false;
@@ -2108,6 +2115,18 @@ async function handleChatSubmit(e) {
 
     // chat
     setNoteMessage('Generating response…', { busy: true });
+
+    // Create the placeholder bot bubble immediately and type the waiting
+    // notice into it, so the main chat window shows in-thread feedback for
+    // the entire 1-3 minute LLM wait. The waiting copy itself uses the same
+    // keyboard-typing effect as the final response.
+    chatBotUI = appendBotTypingMessage('', CFG.JOB_ID_NONE);
+    await typeIntoElement(chatBotUI.textEl, WAITING_MSG, {
+      cps: 60,
+      chunkMin: 1,
+      chunkMax: 4,
+      maxTyped: 800,
+    });
 
     const data = await apiChat(payload);
     const reply = data.reply || data.message || data.status || '';
@@ -2166,8 +2185,9 @@ async function handleChatSubmit(e) {
       return;
     }
 
-    appendMessage('Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
-    pushStatusMessage(String(err?.message || err));
+    const serverMsg = String(err?.message || err || '').trim();
+    appendMessage(serverMsg || 'Error contacting server. Please try again.', 'bot', CFG.JOB_ID_NONE);
+    pushStatusMessage(serverMsg || 'Error contacting server.');
     setReferences([]);
 
   } finally {
