@@ -1,0 +1,78 @@
+# PEERS family profile.
+#
+# Reproduces the original web_scraper_mt.py defaults for crawls of the
+# wanttoknow.info / momentoflove.org family of sites. Load with:
+#
+#     python -m seedsoftruth.webscraper --profile peers --start-url http://www.momentoflove.org
+#
+# `home_domains` are treated as "this is part of the corpus" — the crawler
+# will descend into them up to `max_depth`. URLs outside this set are still
+# fetched once (so off-site articles linked from the corpus get saved) but
+# not traversed past their landing page.
+
+home_domains:
+  - wanttoknow.info
+  - momentoflove.org
+  - weboflove.org
+  - newsarticles.media
+  - divinemystery.net
+  - inspiringcommunity.org
+  - wisdomcourses.net
+  - inspirationcourse.net
+  - hidden-knowledge.net
+  - insightcourse.net
+  - transformationteam.net
+  - martintruther.com
+  - gatheringspot.net
+  - usrtk.org
+  - newparadigminstitute.org
+  - responsibletechnology.org
+  - theblackvault.com
+  - farsight.org
+  - childrenshealthdefense.org
+
+# Editorial denylist: domains and URL fragments that should never be crawled,
+# beyond the always-on generic skips (mailto:, javascript:, image extensions).
+# Each entry is matched as a substring against the URL. Adjust to taste.
+deny_substrings:
+  - amazon.com
+  - youtube.com
+  - youtu.be
+  - instagram.com
+  - facebook.com
+  - tiktok.com
+  - twitter.com
+  - x.com
+  - linkedin.com
+  - reddit.com
+  - pinterest.com
+  - snapchat.com
+  - nytimes.com
+  - washingtontimes.com
+  - cnn.com
+  - foxnews.com
+  - nbcnews.com
+  - abcnews.go.com
+  - example.com
+  - example.org
+  - addtoany.com
+  - rumble.com
+  - bit.ly
+  - thegoodinside.com
+  - default.aspx
+  - downloads
+  - redirect
+  - sign-in
+  - wa.me
+
+# Regex patterns (Python syntax) that should never be crawled.
+deny_patterns:
+  # Government and military domains.
+  - '\.gov\b'
+  - '\.mil\b'
+  # Substack-style comment pages, including custom-domain Substacks.
+  - '/comment/\d+$'
+  - '_comment_'
+  - '/comments$'
+
+max_depth: 2

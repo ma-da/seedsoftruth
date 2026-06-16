@@ -1,0 +1,71 @@
+# .dockerignore — what NOT to send to the Docker build context.
+#
+# Keeping the build context small speeds up `docker build` and prevents
+# accidental leakage of secrets, local caches, and large data files into
+# the image. Compare with .gitignore — there's overlap, but they aren't
+# the same thing.
+
+# -------------------- version control --------------------
+.git/
+.gitignore
+.gitignore.pre-phase0.bak
+
+# -------------------- IDE / editor metadata --------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+._*
+
+# -------------------- python build artifacts -------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# -------------------- virtual envs (huge) ----------------
+.venv/
+venv/
+venv311/
+env/
+
+# -------------------- node (only lint config used) -------
+node_modules/
+package-lock.json
+
+# -------------------- large data (mount as volume) -------
+# data/ contains multi-GB SQLite DBs and JSONL. The app reads/writes
+# these at runtime via a bind mount in docker-compose.yml, so they
+# must NOT be baked into the image.
+data/
+db_cache/
+logs/
+
+# -------------------- secrets ----------------------------
+deploy/.env
+.env
+*.env.local
+cookies.txt
+
+# -------------------- generated / scratch ----------------
+*.bak
+*.bak.*
+*.tmp
+*~
+
+# -------------------- docs / artifacts not needed at runtime ----
+*.docx
+*.pages
+SeedsOfTruth_OSS_Readiness_Review.*
+
+# -------------------- jupyter checkpoints ----------------
+.ipynb_checkpoints/
+
+# -------------------- local outputs ----------------------
+output/
+outputs/

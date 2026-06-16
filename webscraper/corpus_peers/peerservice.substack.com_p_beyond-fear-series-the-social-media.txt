@@ -1,0 +1,95 @@
+Beyond Fear Series | The Social Media Platform Transforming Division Into Common Ground
+
+We seek to inspire the transformation of our world by offering the kind of information that helps people move beyond fear, apathy, and outrage to see the world with fresh eyes. The answers aren’t out there in fixing broken institutions that were never built to serve us. They’re in our communities, our relationships, and the real-world movements reimagining those systems entirely —grounded in the understanding that worn-out policy fixes and partisan talking points almost never reach the root causes.
+
+This week’s Beyond Fear series spotlights a game-changing social platform that's using technology for good and bringing people together across differences. This platform has helped shape dozens of laws in Taiwan and is now being adapted in California to bridge divides and create policies that seek to truly represent the voices of the people.
+
+Before we dive in, let's first set the context.
+
+Divisive Media is a Business Model
+
+A growing body of research is making it clear: our media systems are structurally designed to amplify outrage and division . Former Facebook data scientist Frances Haugen testified at a Senate hearing that the company's algorithm rewarded angry and polarizing content, even pressuring political parties to post more of it or risk losing visibility, constituents, and ultimately their jobs. Leaked internal research revealed that executives chose to look the other way because it was driving higher user activity and therefore more advertising revenue and growth.
+
+Meanwhile, everyday people agree far more than they think on many issues . Yet media, politicians, and social platforms profit from exaggerating the gap, amplifying extreme voices, and keeping us locked in an “us versus them” mindset. Psychologists Dominic Packer and Jay Van Bavel said it best : the deepest divide isn’t over policy. Emotions and identities fuel polarization more than the actual issues on the table.
+
+Our anger and rage can obviously be powerful tools for awakening and calling out injustice. Yet when content engineered for emotional reaction dominates the media ecosystem, it starts to replace any real or more subtle understanding of the complex forces driving today’s chaos.
+
+Too many Americans live in fear today. Fear of being cancelled by social media mobs. Fear of extremism. Fear of fear, itself. Stories of woe permeate today’s media messaging, seldom with nuanced reporting that puts threats in proper context. Propagandists work under the assumption that people eventually believe what they hear most often. The constant hyping of a culture of fear has rhetorically scared otherwise reasonable Americans into irrational emotions and behaviors. The repeated reporting and exaggeration of frightful crises empowers media to manage a society, or ... collaborate with other sources of manipulative power, such as mega-corporations or calculating politicians.
+
+— " Media spread fear, Americans listen ," The Hill
+
+In today’s culture of fear, what looks like consensus is often just the byproduct of a polarized culture where many feel unsafe to speak their minds. Beneath all of this are often the unconscious ways we protect our identity, our image, our place in a group/tribe—which only turns toxic when we can no longer hold space for authenticity, nuance and different views.
+
+Over half of Americans are self-censoring out of fear of being cancelled or alienated from their community. A Cato Institute poll found that 71% of Americans believe that political correctness has silenced important societal discussions, and 58% of Americans reported that the current political climate prevents them from sharing their political beliefs. From gender medicine research , the psychology field , social justice movements , to Middle East politics , a recent study tracking 1 million people revealed that two-thirds of us are afraid to say what we believe in public, while other studies reveal a significant decline in people's motivation to share views that are unique or controversial.
+
+Everyone points to authoritarianism “out there" or in our current administration, but look closely. Much of the fear is coming from how we treat each other on social media, in our communities, even in our movements —where the era of cancel culture sabotages genuine dialogue and viewpoint diversity.
+
+Then Comes vTaiwan: 'Lifting Everyone Out of Echo Chambers'
+
+If our media environment is engineered to divide and distract, then the real breakthrough comes from creating systems that foster common ground, open dialogue, and trust in each other. Taiwan’s bold experiment, vTaiwan , shows what happens when technology is harnessed as a listening tool for the radical purpose of bringing people together across differences.
+
+Now, California is adapting Taiwan’s groundbreaking vTaiwan model into Engaged California, a first-of-its-kind public platform where citizens, officials, and policymakers can deliberate together and find common ground.
+
+vTaiwan was born in 2014 when students and citizens occupied the legislature to protest a secretive trade deal with China. In the aftermath, something unusual happened: the government invited help from the country’s “civic hackers,” a decentralized, leaderless collective called g0v (“gov-zero”). g0v had already been building unofficial, open-source versions of government websites to make public information more accessible and understandable.
+
+As g0v saw it, the problem of politics was essentially one of information. They needed a way not to measure division, but construct consensus. Naturally, they thought the internet could offer a solution. But in Taiwan – like everywhere else – the internet was part of the problem. The kinds of online spaces where political debate happened were engineered for an entirely different purpose: to capture attention. And that often meant amplifying the thundering politics of division and outrage rather than the subtle complexities of compromise.
+
+— " How Taiwan's 'civic hackers' helped find a new way to run the country ," The Guardian
+
+How vTaiwan works:
+
+Start with a real question.
+
+A government agency or a public petition brings up an issue that needs solving, which is explained in plain language so anyone can understand.
+
+Crowdsource facts and information.
+
+Before debating, citizens, experts, journalists, and civic tech volunteers gather the best available data, research, and lived experience from all sides. The aim isn’t to force agreement on what’s “true,” but to make the information landscape transparent so everyone can see the same sources even if they interpret them differently.
+
+Invite everyone in.
+
+People join the online discussion through Pol.is, an AI-powered platform that sorts thousands of comments in real time. You can share your own idea, or simply click “agree” or “disagree” on others. There’s no reply button, so trollling or divisive statements aren't even visible.
+
+Pol.is lifted everyone out of their echo chambers. It gave oxygen instead to statements that found support across different groups as well as within them. Technically, the tweak was small, but politically its effect was enormous. Rather than encourage grandstanding or the trading of insults, it gamified finding consensus.
+
+— " Crossing Divides: How a social network could save democracy from deadlock ," BBC
+
+See the big picture.
+
+People can’t directly argue with each other, but they can add new ideas for everyone to vote on. As these ideas gather “agree” and “disagree” clicks, Pol.is maps the conversation and reveals where people agree and where viewpoints diverge.
+
+“People compete to bring up the most nuanced statements that can win most people across," [Taiwan's first digital minister Audrey] Tang told me. "They spend far more time discovering their commonalities rather than going down a rabbit hole on a particular issue ... Invariably, within three weeks or four ... we always find a shape where most people agree on most of the statements, most of the time."
+
+— " Crossing Divides: How a social network could save democracy from deadlock ," BBC
+
+Find the common ground.
+
+Ideas that win support from across different viewpoints rise to the top, shifting the focus from the loudest extremes to the most widely supported solutions.
+
+Bring people together
+
+Citizens, experts, and officials meet (often livestreamed) to turn that common ground into specific proposals.
+
+Make it official.
+
+Government agencies respond, draft policy or law, and publicly share how they’ll act on it. Progress is tracked, results are shared, and the process can be repeated if needed.
+
+By clearing away the noise and divisiveness, vTaiwan created outcomes that the government could actually act on. It has formed the core of around a dozen pieces of laws and regulations now implemented in Taiwan.
+
+— " How Taiwan's 'civic hackers' helped find a new way to run the country ," The Guardian
+
+Imagine a world...
+
+It’s incumbent upon us to model the humanity we want, rather than demand the humanity we expect. — business visionary and professor Dr. David E. Martin
+
+Imagine a world where we go beyond media and social echo chambers. A world where our collective conversations are grounded in the courage to move beyond fear and surrender to something larger than our opinions, egos, identities, and the need to be right.
+
+Imagine if we radically shifted our conversations to frame every issue or topic in ways that bring us all together and highlight our common values. A new consciousness that integrates the best of the intellect (ideas, stories, beliefs, our version of the facts) with the relational world. To relate is to get present with others, relax our fears, listen, and ask questions to deepen the conversation.
+
+This may not always produce perfect results. Yet if enough people take the risk to relate to each other differently–to take the dehumanization out of our interactions and not see each other as enemies–we just might create new possibilities and choices we couldn’t see before.
+
+WantToKnow.info is a nonprofit news information service founded by White House whistleblower Fred Burks in 2003, after he testified in a high-profile terrorism trial about how U.S. government officials repeatedly lied to the international press during his time as a language interpreter for presidents and top government officials around the world.
+
+We go beyond today's headlines to uncover the hidden forces shaping history and driving global events today, regardless of who's elected in office. Our organization serves a dual purpose: exposing verifiable information on high level corruption and cover-ups and highlighting the best of humanity with solutions and stories that remind us of our innate goodness and collective power. We have a comprehensive database of over 13+ news articles , which has been used by thousands of journalists, researchers, and everyday truth seekers since our founding.
+
+Subscribe to our free weekly newsletter here: https://www.wanttoknow.info/subscribe

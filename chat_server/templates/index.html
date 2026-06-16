@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#020617" />
+  <title>Seeds of Truth AI</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Stack+Sans+Notch:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- External CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=7">
+
+</head>
+
+<body class="light">
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+      <div class="sidebar-header">
+        <!-- Collapse (desktop) -->
+        <button
+          type="button"
+          class="sidebar-collapse-btn has-tooltip"
+          id="sidebar-collapse-btn"
+          aria-label="Collapse sidebar"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+
+        <!-- Brand -->
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">
+			<img
+			  src="{{ url_for('static', filename='img/logo512.png') }}"
+			  alt=""
+			  class="brand-logo"
+			/>
+          </div>
+          <div>
+            <button type="button" class="brand-title brand-title-btn" id="about-btn">
+              Seeds of Truth
+            </button>
+            <div class="brand-subtitle">Open Testing Chat</div>
+          </div>
+        </div>
+
+        <!-- Theme toggle -->
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
+          <!-- sun (dark mode) -->
+          <svg class="theme-icon sun" viewBox="0 0 24 24" stroke="#f1f1f1" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M12 3v2.25M18.364 5.636l-1.59 1.59M21 12h-2.25M18.364 18.364l-1.59-1.59M12 18.75V21M7.227 16.773l-1.59 1.59M5.25 12H3M7.227 7.227 5.636 5.636" />
+            <circle cx="12" cy="12" r="4" />
+          </svg>
+          <!-- moon (light mode) -->
+          <svg class="theme-icon moon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-scroll">
+        <!-- Status -->
+        <div>
+          <div class="sidebar-section-title"><a href="https://huggingface.co/peers-ai/wtk-trineday-mini-llama3-70b-lora-v7" target="_blank">Model v9</a>, <a href="https://github.com/ma-da/seedsoftruth/tree/main/data/trineday_mini" target="_blank">Dataset Gamma</a></div> 
+
+          <div class="status-panel">
+            <div class="status-row">
+              <div class="status-left">
+                <span class="status-dot" id="endpoint-dot" aria-hidden="true"></span>
+                <span class="status-label" id="endpoint-label">Checking endpoint...</span>
+              </div>
+              <span class="status-chip" id="endpoint-chip">unknown</span>
+            </div>
+
+            <div class="status-queue" id="queue-line">
+              There are <b id="queue-count">0</b> queries in line.
+              Estimated wait time is <b id="queue-eta">0s</b>.
+            </div>
+
+
+          </div>
+        </div>
+		<!-- Ping test -->
+		
+		<pre id="ping-result"></pre>
+
+        <!-- Recent -->
+        <div class="sidebar-section-title">Recent</div>
+        <div id="recent-list">
+          <div class="recent-item muted">No saved conversations yet.</div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <div class="sidebar-avatar" aria-hidden="true">
+		    <img src="{{ url_for('static', filename='img/logo512.png') }}" alt="" class="sidebar-avatar-img"/>
+		  </div>
+          <div>
+            <div class="sidebar-user-name">Seeds of Truth</div>
+		    <div class="sidebar-version-info">
+			  Version
+			  <span id="sidebar-version-num"></span>
+			  <span id="sidebar-version-name"></span>
+		    </div>
+            <div class="sidebar-user-sub">
+              Developed by
+              <a href="https://www.peerservice.org/donations" target="_blank" rel="noopener noreferrer">PEERS</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="main">
+      <!-- Mobile header -->
+      <div class="mobile-header">
+        <button class="mobile-menu-btn" id="menu-btn" aria-label="Toggle sidebar">
+          <svg width="22" height="22" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" aria-hidden="true">
+            <path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <div class="mobile-title">Seeds of Truth AI</div>
+
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
+          <svg class="theme-icon sun" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M12 3v2.25M18.364 5.636l-1.59 1.59M21 12h-2.25M18.364 18.364l-1.59-1.59M12 18.75V21M7.227 16.773l-1.59 1.59M5.25 12H3M7.227 7.227 5.636 5.636" />
+            <circle cx="12" cy="12" r="4" />
+          </svg>
+          <svg class="theme-icon moon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Chat -->
+      <div class="chat-wrapper" id="chat-container">
+        <div class="chat-inner">
+          <div class="welcome" id="welcome-message">
+            <div class="welcome-icon" aria-hidden="true">
+			<img
+			  src="{{ url_for('static', filename='img/logo512.png') }}"
+			  alt=""
+			  class="welcome-logo"
+			/>
+            </div>
+
+            <div class="welcome-title">Seeds of Truth</div>
+            <div class="welcome-sub">
+	              <p>Welcome to Seeds of Truth alpha launch! Ask your esoteric questions!</p>
+              <ol>
+                <li>Click the lock icon at top right and enter your password</li>
+                <li>Click the plus sign in chat area to select "AI chat" or "Search"
+                </li>
+                <li>Submit feedback about any answer/reference by clicking on the top right of any message area</li>
+				<li>For bug reports or suggestions, please email accessiblefuture@gmail.com</li>
+				<li>Support this project <a href="https://github.com/ma-da/seedsoftruth" target="_blank">on Github</a> or by <a href="https://www.wanttoknow.info/donationswtk" target="_blank">donating here</a></li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="messages" id="messages" aria-live="polite"></div>
+        </div>
+      </div>
+
+		<!-- Input -->
+		<div class="input-wrapper">
+		  <div class="input-inner">
+			<div class="input-row">
+			  <!-- Textarea + Send -->
+			  <div class="input-area-wrap">
+			      <button type="button" class="tools-button tools-button--inset" id="tools-btn" aria-label="Tools">
+					<span class="tools-plus">+</span>
+				  </button>
+				<form id="chat-form" autocomplete="off">
+				  <textarea
+					id="chat-input"
+					class="chat-input"
+					rows="1"
+					placeholder="Ask Seeds of Truth AI..."
+				  ></textarea>
+
+				  <button type="submit" class="send-button" id="send-btn" aria-label="Send">
+					➔
+				  </button>
+				</form>
+
+				<!-- Tools popup -->
+				<div class="tools-popup" id="tools-popup" aria-label="Tools panel" role="dialog" aria-modal="false">
+				<!-- MODEL -->
+				<div class="tools-section" data-dev-only>
+				  <div class="tools-section-title">Model</div>
+
+				  <div class="tools-row tools-row--stack">
+					<select
+					  id="model-type"
+					  class="tools-select tools-select--full"
+					  aria-describedby="model-type-help"
+					>
+					  <option value="spark" selected>Seeds of Truth LoRA (spark)</option>
+					  <option value="hf">Seeds of Truth LoRA (hf)</option>
+					  <option value="deepinfra">Vanilla Llama</option>
+					</select>
+				  </div>
+				</div>
+
+				<div class="tools-divider" aria-hidden="true" data-dev-only></div>
+				  <!-- MODE -->
+				  <div class="tools-section">
+					<div class="tools-section-title">Mode</div>
+
+					<div class="segmented" role="radiogroup" aria-label="Mode selection">
+					  <input type="radio" id="mode-search" name="mode" value="search" />
+					  <label for="mode-search">Search</label>
+
+					  <input type="radio" id="mode-chat" name="mode" value="chat" checked />
+					  <label for="mode-chat">AI chat</label>
+
+					  <input type="radio" id="mode-ab" name="mode" value="ab" />
+					  <label for="mode-ab">A/B test</label>
+					</div>
+
+					<div class="tools-help" id="mode-help">AI chat: normal single-model response.</div>
+				  </div>
+
+				  <div class="tools-divider" aria-hidden="true" data-dev-only></div>
+
+				  <!-- MEMORY -->
+				  <div class="tools-section" data-dev-only>
+					<div class="tools-section-title">Memory</div>
+
+					<label class="tools-label" for="history-slider">
+					  Previous questions remembered
+					  <span class="tools-value" id="history-value">3</span>
+					</label>
+
+					<input
+					  id="history-slider"
+					  class="tools-range"
+					  type="range"
+					  min="0"
+					  max="5"
+					  step="1"
+					  value="3"
+					/>
+
+					<div class="tools-help">
+					  Includes up to <b id="history-help-n">2</b> previous Q/A turns in the next request.
+					</div>
+				  </div>
+				  
+					<div class="tools-divider" aria-hidden="true" data-dev-only></div>
+
+					<!-- RAG -->
+					<div class="tools-section" data-dev-only>
+					  <div class="tools-section-title">Retrieval</div>
+
+					  <div class="tools-row">
+						<div class="tools-row-text">
+						  <div class="tools-row-label">Use RAG context</div>
+						  <div class="tools-help" id="rag-help">
+							When off, queries the LoRA model directly (no retrieval).
+						  </div>
+						</div>
+
+						<div class="toggle">
+						  <input
+							type="checkbox"
+							id="rag-toggle"
+							class="toggle-input"
+							checked
+							aria-describedby="rag-help"
+						  />
+						  <label for="rag-toggle" class="toggle-track" aria-label="Toggle RAG"></label>
+						</div>
+					  </div>
+					  
+					  <!-- DEV-ONLY: Force Queue. When checked, /api/chat returns
+					       503-queued even if the model is ready, so we can test
+					       the queued-response paths (e.g. the email-on-ready
+					       flow) without depending on real inference timing. -->
+					  <div class="tools-row" data-dev-only style="margin-top:14px;">
+						<div class="tools-row-text">
+						  <div class="tools-row-label">Force queue (dev)</div>
+						  <div class="tools-help" id="force-queue-help">
+							Forces chat requests to queue, bypassing model readiness checks.
+							Useful for testing the email-on-ready flow.
+						  </div>
+						</div>
+
+						<div class="toggle">
+						  <input
+							type="checkbox"
+							id="force-queue-toggle"
+							class="toggle-input"
+							aria-describedby="force-queue-help"
+						  />
+						  <label for="force-queue-toggle" class="toggle-track" aria-label="Force queue"></label>
+						</div>
+					  </div>
+
+					  <div class="tools-compact-pair" data-dev-only aria-label="Retrieval advanced settings">
+						<label class="tools-mini-field" for="rag-algo-type">
+						  <span>Algo</span>
+						  <input
+							id="rag-algo-type"
+							class="tools-number"
+							type="number"
+							min="1"
+							max="10"
+							step="1"
+							value="1"
+							inputmode="numeric"
+						  />
+						</label>
+
+						<label class="tools-mini-field" for="prompt-type">
+						  <span>Prompt</span>
+						  <input
+							id="prompt-type"
+							class="tools-number"
+							type="number"
+							min="1"
+							max="10"
+							step="1"
+							value="1"
+							inputmode="numeric"
+						  />
+						</label>
+					  </div>					  
+					  </div>
+					<div class="tools-divider" aria-hidden="true"></div>
+					<div class="tools-section">
+					  <div class="tools-section-title">Select Topic</div>					
+						<div class="tools-row tools-row--stack">
+
+						  <select
+							id="search-group"
+							class="tools-select tools-select--full"
+							aria-describedby="search-group-help"
+						  >
+							<option value="WantToKnow">WantToKnow</option>
+							<option value="Deep Politics" selected>Deep Politics</option>
+							<option value="Health">Health</option>
+							<option value="UFO">UFO</option>
+							<option value="Books">Books</option>
+							<option value="Everything">Everything</option>
+						  </select>
+						</div>
+					</div>
+				  
+				</div>
+			  </div>
+			</div>
+
+			<!-- Input note + actions -->
+			<div class="input-note">
+
+			<span class="note-text" id="note-text" role="status" aria-live="polite">
+			  <span class="note-spinner" id="note-spinner" aria-hidden="true"></span>
+			  <span class="note-message" id="note-message">
+				Seeds of Truth AI can make mistakes. Please verify important information.
+			  </span>
+			</span>
+
+			  <span class="note-actions">
+				<!-- Save -->
+				<button
+				  type="button"
+				  class="icon-btn icon-btn--ghost has-tooltip"
+				  id="save-convo-btn"
+				  data-tooltip="Save conversation"
+				  aria-label="Save conversation"
+				>
+				  <svg
+					class="save-icon"
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2.4"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+				  >
+					<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+					<path d="M17 21v-8H7v8" />
+					<path d="M7 3v5h8" />
+				  </svg>
+				</button>
+
+				<!-- Trash -->
+				<button
+				  type="button"
+				  class="icon-btn icon-btn--danger has-tooltip"
+				  id="trash-chat-btn"
+				  data-tooltip="Clear current chat"
+				  aria-label="Clear current chat"
+				>
+				  <svg
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2.2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+				  >
+					<path d="M3 6h18" />
+					<path d="M8 6V4h8v2" />
+					<path d="M6 6l1 16h10l1-16" />
+					<path d="M10 11v6" />
+					<path d="M14 11v6" />
+				  </svg>
+				</button>
+			  </span>
+			</div>
+		  </div>
+		</div>
+
+
+      <!-- References -->
+      <section class="references-wrapper" id="references-wrapper" aria-label="References">
+        <div class="references-inner">
+          <div class="references-header">
+            <div class="references-title" id="references-title">References</div>
+            <div class="references-count" id="references-count">0 items</div>
+          </div>
+
+          <div class="references-grid" id="references-container"></div>
+
+          <div class="references-empty" id="references-empty">
+            When available, up to 10 reference cards related to the latest answer will appear here.
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Mobile overlay -->
+  <div class="overlay" id="overlay"></div>
+
+  <!-- Modal (confirm/alert) -->
+  <div class="modal-overlay" id="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-message">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title">Confirm</div>
+        <button type="button" class="modal-close" id="modal-close" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-message" id="modal-message"></div>
+
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- Feedback Modal -->
+  <div class="fb-overlay" id="fb-overlay" aria-hidden="true">
+    <div class="fb-modal" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+      <div class="fb-header">
+        <div class="fb-title" id="fb-title">Add feedback</div>
+        <button type="button" class="fb-close has-tooltip" id="fb-close" data-tooltip="Close" aria-label="Close">×</button>
+      </div>
+
+      <div class="fb-body">
+        <div class="fb-meta" id="fb-meta"></div>
+
+        <input type="hidden" id="fb-job-id" name="job_id" />
+
+        <div class="fb-grid">
+          <label class="fb-field" id="fb-field-accuracy">
+            <span>Accuracy (1–10)</span>
+            <input id="fb-accuracy" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+
+          <label class="fb-field" id="fb-field-style">
+            <span>Style (1–10)</span>
+            <input id="fb-style" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+
+          <label class="fb-field" id="fb-field-relevance">
+            <span>Relevance (1–10)</span>
+            <input id="fb-relevance" type="number" min="1" max="10" step="1" value="8" />
+          </label>
+        </div>
+
+        <label class="fb-field fb-field-full">
+          <span>Comments</span>
+          <textarea id="fb-comments" rows="4" placeholder="What should we improve? What worked well?"></textarea>
+        </label>
+      </div>
+
+      <div class="fb-actions">
+        <button type="button" class="fb-btn" id="fb-cancel">Cancel</button>
+        <button type="button" class="fb-btn primary" id="fb-submit">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Thanks Toast -->
+  <div class="fb-toast" id="fb-toast" aria-hidden="true">
+    <span class="fb-check" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6L9 17l-5-5" />
+      </svg>
+    </span>
+    <span>Thanks for contributing!</span>
+  </div>
+
+  <!-- Sidebar open button (when collapsed) -->
+  <button
+    type="button"
+    class="sidebar-open-btn has-tooltip"
+    id="sidebar-open-btn"
+    aria-label="Open sidebar"
+  >
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  </button>
+
+	<button id="lock-btn" class="lock-btn" aria-label="Locked">
+	  <!-- locked icon -->
+	  <svg class="lock-icon lock-icon-locked" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<rect x="5" y="11" width="14" height="10" rx="2"></rect>
+		<path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+	  </svg>
+
+	  <!-- unlocked icon -->
+	  <svg class="lock-icon lock-icon-unlocked" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<rect x="5" y="11" width="14" height="10" rx="2"></rect>
+		<path d="M16 11V8a4 4 0 0 0-7.2-2.4"></path>
+	  </svg>
+	</button>
+
+
+	<div id="lock-modal" class="lock-modal" aria-hidden="true">
+	  <div class="lock-card" role="dialog" aria-modal="true" aria-label="Password">
+		<button id="lock-close" class="lock-close" type="button" aria-label="Close">×</button>
+
+		<label class="lock-label" for="lock-pass">Password:</label>
+
+		<div class="lock-row">
+		  <input id="lock-pass" class="lock-input" type="password" autocomplete="current-password" />
+		  <button id="lock-enter" class="lock-enter" type="button">Enter</button>
+		</div>
+
+		<div id="lock-msg" class="lock-msg" aria-live="polite"></div>
+	  </div>
+	</div>
+
+	<!-- Email-response modal: appears when a chat request gets queued
+	     (HTTP 503) and the server signals that email delivery is offered.
+	     Reuses the lock-modal CSS classes so styling stays consistent. -->
+	<div id="email-modal" class="lock-modal" aria-hidden="true">
+	  <div class="lock-card" role="dialog" aria-modal="true" aria-labelledby="email-title">
+		<button id="email-close" class="lock-close" type="button" aria-label="Close">×</button>
+
+		<h3 id="email-title" class="lock-label" style="font-size:15px; margin-bottom:6px;">
+		  This will take a few minutes
+		</h3>
+
+		<p id="email-subtitle" style="font-size:13px; line-height:1.4; margin:0 0 12px 0; opacity:0.85;">
+		  Inference can take 2–5 minutes. We can email you the response when it's
+		  ready, or you can wait here.
+		</p>
+
+		<label class="lock-label" for="email-input">Email address:</label>
+		<div class="lock-row">
+		  <input id="email-input" class="lock-input" type="email"
+		         autocomplete="email" inputmode="email"
+		         placeholder="you@example.com" />
+		  <button id="email-submit" class="lock-enter" type="button">Email me</button>
+		</div>
+
+		<div class="lock-row" style="margin-top:8px; justify-content:flex-end;">
+		  <button id="email-wait" class="lock-enter" type="button"
+		          style="background:transparent; color:inherit; border:1px solid rgba(148,163,184,0.55);">
+		    I'll wait
+		  </button>
+		</div>
+
+		<div id="email-msg" class="lock-msg" aria-live="polite"></div>
+	  </div>
+	</div>
+	<!-- Click distortion layer -->
+	<div id="click-distort" aria-hidden="true"></div>
+
+	<!-- SVG filter used by the distortion "lens" -->
+	<svg width="0" height="0" style="position:absolute">
+	  <filter id="sot-displace">
+		<!-- Animated via JS -->
+		<feTurbulence
+		  type="fractalNoise"
+		  baseFrequency="0.012"
+		  numOctaves="1"
+		  seed="2"
+		  result="noise"
+		/>
+		<feDisplacementMap
+		  in="SourceGraphic"
+		  in2="noise"
+		  scale="0"
+		  xChannelSelector="R"
+		  yChannelSelector="G"
+		/>
+	  </filter>
+	</svg>
+	
+	<!-- About Modal -->
+	<div class="about-overlay" id="about-overlay" aria-hidden="true">
+	  <div class="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
+		<button type="button" class="about-close" id="about-close" aria-label="Close">×</button>
+
+		<div class="about-grid">
+		  <!-- Left (40%) -->
+		  <div class="about-left">
+			<img
+			  src="/static/img/logo512.png"
+			  alt="Seeds of Truth"
+			  class="about-image"
+			/>
+		  </div>
+
+		  <!-- Right (60%) -->
+		  <div class="about-right">
+			<h2 class="about-title" id="about-title">Seeds of Truth AI</h2>
+
+			<div class="about-body">
+			<p>Major events have shown us time and time again that we're not getting the full truth from the official story. Seeds of Truth (SoT) is a censorship-resistant AI built for <span id="violet-highlight">conscious, self-directed learning</span> in a media landscape shaped by special interests, manipulative algorithms, and institutional guardrails.</p>
+
+			<p>SoT is trained on millions of suppressed, overlooked, and hard-to-find documents with sources always provided. It offers a trustworthy space for disillusioned people across the political spectrum — researchers, journalists, independent thinkers, and everyday truth-seekers — to <span id="violet-highlight">develop their own worldview, one capable of holding complexity, nuance, and multiple truths at once</span> to make sense of this dynamic moment in human history.</p>
+
+			<p>Everywhere you look, media narratives and even progressive, alternative social movements are saturated with doom and gloom, divisive, and problem-focused perspectives. SoT helps people explore <span id="violet-highlight">what's possible beyond fear</span> with the best research and real-world examples into game-changing solutions, breakthrough ideas, emerging alternatives, and stories of healing and societal transformation.</p>
+
+			<p>We're here to inspire the <span id="violet-highlight">transformation and healing of our world</span> by offering the kind of information that empowers this shift.</p>
+			</div>
+		  </div>
+		</div>
+	  </div>
+	</div>
+
+  <!-- External JS -->
+  <script src="{{ url_for('static', filename='app.js') }}?v=4" defer></script>
+
+</body>
+</html>
+

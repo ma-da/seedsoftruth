@@ -1,0 +1,6 @@
+# Optional Playwright dependency for JS-rendered HTML.
+#
+# After installing, you must also fetch the Chromium browser:
+#     playwright install chromium
+
+playwright>=1.40

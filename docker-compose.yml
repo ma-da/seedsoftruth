@@ -1,0 +1,79 @@
+# Seeds of Truth — local / single-host Docker Compose stack.
+#
+# Bring it up:
+#     docker-compose up --build
+#
+# Tail logs:
+#     docker-compose logs -f web
+#
+# Bring it down (containers only; volumes preserved):
+#     docker-compose down
+#
+# Notes:
+#   * The Dockerfile lives in deploy/ but the build context here is `.` so
+#     COPY paths inside the Dockerfile resolve from the repo root.
+#   * data/, logs/, and db_cache/ are bind-mounted from the host so SQLite
+#     state and logs survive image rebuilds.
+#   * Environment variables come from deploy/.env (copy deploy/.env.example
+#     to deploy/.env and fill it in before first run).
+#   * Single web service for now. When you split the queue worker into its
+#     own process (ALPHA_BLOCKERS.md #1), add a sibling `worker` service
+#     pointing at the same image with a different `command:` — example
+#     stubbed at the bottom of this file.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: seedsoftruth:latest
+    container_name: seedsoftruth-web
+    restart: unless-stopped
+
+    env_file:
+      - deploy/.env
+
+    # Override path-shaped vars so they point at the in-container mount
+    # points rather than the host paths in deploy/.env. Anything not set
+    # here is taken from env_file or has a default in the Python code.
+    environment:
+      HYBRID_DB_PATH: /app/data/gamma_master_hybrid_fts_stage3.db
+      ENTITY_CANON_MAP_PATH: /app/data/entity_query_normalization_map.flat.json
+
+    volumes:
+      # SQLite DBs + entity map — single source of truth, lives on host.
+      - ./data:/app/data
+      # Application logs — easy to tail from the host with `tail -f logs/sot.log`.
+      - ./logs:/app/logs
+      # Webscraper resume cache — preserves crawl state across container restarts.
+      - ./db_cache:/app/db_cache
+
+    ports:
+      - "8000:8000"
+
+    # Healthcheck is defined in the Dockerfile; compose will surface its
+    # state in `docker-compose ps`.
+
+  # ---------------------------------------------------------------------
+  # Worker service (commented out — uncomment after the queue is moved
+  # to SQLite-backed per ALPHA_BLOCKERS.md #1).
+  #
+  # worker:
+  #   image: seedsoftruth:latest
+  #   container_name: seedsoftruth-worker
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - web
+  #   env_file:
+  #     - deploy/.env
+  #   environment:
+  #     HYBRID_DB_PATH: /app/data/gamma_master_hybrid_fts_stage3.db
+  #     ENTITY_CANON_MAP_PATH: /app/data/entity_query_normalization_map.flat.json
+  #     # chat_server/ holds the flat-imported modules; put it on the path
+  #     # so `python -m worker` resolves them (cwd stays /app).
+  #     PYTHONPATH: /app/chat_server
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./logs:/app/logs
+  #   command: ["python", "-m", "worker"]
+  # ---------------------------------------------------------------------

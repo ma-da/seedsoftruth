@@ -1,0 +1,11 @@
+# Optional fast-path dependency for the Seeds of Truth trainer.
+#
+# Unsloth provides 4-bit loading + fused LoRA kernels. The trainer
+# prefers it when available and falls back to the vanilla HF stack
+# (transformers + peft + trl) otherwise.
+#
+# Install with:    pip install -r requirements-unsloth.txt
+#
+# Note: Unsloth has its own GPU/CUDA constraints — see https://github.com/unslothai/unsloth
+
+unsloth>=2024.10

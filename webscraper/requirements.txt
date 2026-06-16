@@ -1,0 +1,13 @@
+# Required dependencies for the Seeds of Truth web scraper.
+# Install with:    pip install -r requirements.txt
+#
+# Playwright is optional; install with requirements-playwright.txt if you
+# want JS-rendered HTML support (recommended for modern sites).
+
+requests>=2.28
+beautifulsoup4>=4.12
+pybloom-live>=4.0
+PyMuPDF>=1.23
+newspaper3k>=0.2.8
+lxml_html_clean>=0.1
+PyYAML>=6.0

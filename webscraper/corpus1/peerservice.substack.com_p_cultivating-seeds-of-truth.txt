@@ -1,0 +1,47 @@
+Cultivating Seeds of Truth
+
+At WantToKnow.info, we’ve been grappling with the forces of censorship since the beginning.
+
+In the years after 9/11, we began collecting the best news reports we could find on both high level cover-ups and inspiring topics. Our focus was always on the most reliable and verifiable sources, like leading newspapers and scientific journals. Oftentimes, we found that the most revealing stories would disappear from the web shortly after publication. Today, there are hundreds and maybe thousands of news reports in our public archive that no longer exist anywhere else on the internet.
+
+We have this information, but people who don’t know about us already increasingly have no way to find and access this information. Since 2020, online censorship and propaganda have become all pervasive. This has hit us hard. Our entire model challenges the official story by questioning dominant narratives with reliable and verifiable sources. We are exactly the kind of organization being suppressed by the new censorship-industrial complex.
+
+Google no longer includes us in search results on the specialized topics we cover. Our social media posts don’t get shown to many people. Getting the word out has never been more difficult. And as more and more people move away from Google searches in favor of AI queries, the censorship and propaganda is becoming even more sophisticated.
+
+Layers of AI censorship
+
+The findings highlight growing concerns about attempts by governments, corporations and philanthropies to influence widely used online information sources that increasingly feed search engines and artificial intelligence systems that summarize information for the public. - US Right to Know
+
+Mainstream Large Language Model (LLM) AI chat apps are all built to subtly censor dissenting views and promote the official story. This censorship happens on multiple levels:
+
+Google is no longer indexing the vast majority of online content, making AI searches the only available way to look for certain kinds of information.
+
+The selection of AI training data excludes information that challenges the official story
+
+The training data itself is influenced by intelligence agencies and corporate interests. AIs rely heavily on data from sites like Wikipedia and Reddit, but these sites themselves are manipulated by the CIA and shadowy intelligence consortiums like the Cyber Threat Intelligence League (CTIL)
+
+Criminals like Jeffrey Epstein hire specialists to manipulate the web in their favor
+
+The AI model’s “alignment” or personality is designed to refuse to respond to some classes of controversial questions
+
+Additional “safety features” are added by platforms, further restricting the scope of acceptable chat
+
+The censorship of AI is part of a much broader effort to control public discourse. Here’s a graphic uncovered by investigative journalist Michael Shellenberger from a CTIL briefing that documents some of the strategies employed to do this. These strategies include redirecting searches, causing reputational harm to dissident voices, hijacking content, and co-opting influencers.
+
+Seeds of Truth
+
+As part of our response to the challenges of this new media environment, PEERS started a project called Seeds of Truth in 2025. Our original intention was to create an uncensored AI that could respond intelligently to questions about the controversial topics we cover. Last August, with funding from a politically unaffiliated public benefit foundation, a small team of us began working on the AI. We approached the issue of LLM censorship systematically and produced some promising tech. Here’s a description of the endeavor:
+
+Major events have shown us time and time again that we’re not getting the full truth from the official story. Seeds of Truth (SoT) is a censorship-resistant AI built for conscious, self-directed learning in a media landscape shaped by special interests, manipulative algorithms, and institutional guardrails. SoT is trained on millions of suppressed, overlooked, and hard-to-find documents with sources always provided. It offers a trustworthy space for disillusioned people across the political spectrum — researchers, journalists, independent thinkers, and everyday truth-seekers — to develop their own worldview, one capable of holding complexity, nuance, and multiple truths at once to make sense of this dynamic moment in human history. Everywhere you look, media narratives and even progressive, alternative social movements are saturated with doom and gloom, divisive, and problem-focused perspectives. SoT helps people explore what’s possible beyond fear with the best research and real-world examples of game-changing solutions, breakthrough ideas, emerging alternatives, and stories of healing and societal transformation. We’re here to inspire the transformation and healing of our world by offering the kind of information that empowers this shift.
+
+So far, our team has put about 1,179 hours into this work. We’ve turned ideas into designs and developed infrastructure to bring those designs to life. Our humble crew has exchanged 4,662 Telegram messages, trained 9 models, checked over 110,000 lines of code into our Github repositories ( peersai and seedsoftruth ), built multiple testing environments, prototyped uncensorable decentralized datasets, and developed a test chat app. This app uses a custom-trained 70 billion parameter LLM base model in combination with a 166,000 item dataset to produce some pretty good responses, on par with the responses produced by other uncensored AI projects.
+
+The technical objects we’ve produced include a web crawler and data processing notebooks, Low-Rank Adaptation (LoRA) adapters, and specialized indexed datasets. These are valuable public goods. But the things we’ve learned about the technology are even more valuable. Right away, we’re incorporating AI into a new WantToKnow research portal. And we’re in a great position to make other significant contributions to the larger effort to make uncensored media and controversial research more accessible.
+
+As people change how they find and make sense of information, AI is taking center stage. Powerful forces are using AI for new forms of censorship and propaganda, but this technology also has great potential to make us more free and informed. Seeds of Truth is a good step in that direction. In upcoming posts, we’ll share more about the project, the AI, the dataset, and what you can do to make use of the the resources we’re creating.
+
+WantToKnow.info is a nonprofit news information service founded by White House whistleblower Fred Burks in 2003, after he testified in a high-profile terrorism trial about how U.S. government officials repeatedly lied to the international press during his time as a language interpreter for presidents and top government officials around the world.
+
+We go beyond today’s headlines to uncover the hidden forces shaping history and driving global events today, regardless of who’s elected in office. Our organization serves a dual purpose: exposing verifiable information on high level corruption and cover-ups and highlighting the best of humanity with solutions and stories that remind us of our innate goodness and collective power. We have a comprehensive database of over 13+ news articles , which has been used by thousands of journalists, researchers, and everyday truth seekers since our founding.
+
+Subscribe to our free weekly newsletter here: https://www.wanttoknow.info/subscribe
