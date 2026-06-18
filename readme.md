@@ -18,6 +18,14 @@ The system is designed to surface evidence that lives in long-form, lightly-inde
 
 Live reference deployment: [seedsoftruth.peerservice.org](https://seedsoftruth.peerservice.org)
 
+---
+
+## Who is behind it
+
+The CA nonprofit Public Education and Empowerment Resource Service (PEERS) started Seeds of Truth in 2025. Our original intention was to create an uncensored AI that could respond intelligently to questions about the controversial topics covered by [WantToKnow.info](https://wanttoknow.info), our flagship news service. Last August, with funding from a politically unaffiliated public benefit foundation, a small team of us began working on the AI. Read about the development process in our latest [Substack update](https://wtkconsciousmedia.substack.com/p/cultivating-seeds-of-truth). If you want to support this project financially, you can make a [tax deductable donation here](https://www.wanttoknow.info/donationswtk).
+
+---
+
 ## Documentation
 
 Full end-to-end documentation now lives under [`docs/`](docs/README.md), covering every pipeline stage from crawling raw pages to serving answers. It is written for two audiences at once — people new to RAG (terms like *chunk*, *BM25*, and *LoRA* are explained inline) and people who already know ML but want a concrete map of this codebase.
