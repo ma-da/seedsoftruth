@@ -52,6 +52,7 @@ COPYRIGHT_BLOCK_MSG = "This text protected by copyright."
 # ------------------ MODEL ADAPTERS ------------------
 hf_llm_model = model_adapters.LLMFactory.create("hf")
 deep_infra_llm_model = model_adapters.LLMFactory.create("deepinfra")
+deep_infra_stream_llm_model = model_adapters.LLMFactory.create("deepinfra_stream")
 spark_llm_model = model_adapters.LLMFactory.create("spark")
 sim_model = model_adapters.LLMFactory.create("sim")
 vllm_llm_model = model_adapters.LLMFactory.create("vllm")
@@ -62,12 +63,20 @@ if DEFAULT_MODEL_TYPE == "spark":
     llm_model = spark_llm_model
 elif DEFAULT_MODEL_TYPE == "deepinfra":
     llm_model = deep_infra_llm_model
+elif DEFAULT_MODEL_TYPE == "deepinfra_stream":
+    llm_model = deep_infra_stream_llm_model
 elif DEFAULT_MODEL_TYPE == "vllm":
     llm_model = vllm_llm_model
 else:
     llm_model = hf_llm_model
 
-llm_models = [hf_llm_model, deep_infra_llm_model, spark_llm_model, vllm_llm_model]
+llm_models = [
+    hf_llm_model,
+    deep_infra_llm_model,
+    deep_infra_stream_llm_model,
+    spark_llm_model,
+    vllm_llm_model,
+]
 
 
 def get_model_type(type: str) -> model_adapters.LLMStrategy:
@@ -77,7 +86,8 @@ def get_model_type(type: str) -> model_adapters.LLMStrategy:
         type: A model-type name. ``"default"`` returns the process default
             adapter; otherwise one of the names accepted by
             ``model_adapters.is_valid_model_type`` (``"hf"``,
-            ``"deepinfra"``, ``"spark"``, ``"vllm"``, ``"sim"``).
+            ``"deepinfra"``, ``"deepinfra_stream"``, ``"spark"``,
+            ``"vllm"``, ``"sim"``).
 
     Returns:
         The matching ``model_adapters.LLMStrategy`` adapter.
@@ -85,7 +95,7 @@ def get_model_type(type: str) -> model_adapters.LLMStrategy:
     Raises:
         ValueError: If ``type`` is not a recognized model type.
     """
-    global llm_model, hf_llm_model, deep_infra_llm_model, spark_llm_model, sim_model, vllm_llm_model
+    global llm_model, hf_llm_model, deep_infra_llm_model, deep_infra_stream_llm_model, spark_llm_model, sim_model, vllm_llm_model
 
     if type == "default":
         return llm_model
@@ -97,6 +107,8 @@ def get_model_type(type: str) -> model_adapters.LLMStrategy:
         return hf_llm_model
     elif type == "deepinfra":
         return deep_infra_llm_model
+    elif type == "deepinfra_stream":
+        return deep_infra_stream_llm_model
     elif type == "spark":
         return spark_llm_model
     elif type == "sim":

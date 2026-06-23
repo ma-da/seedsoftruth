@@ -15,7 +15,15 @@ import traceback
 import uuid
 from datetime import datetime
 
-from flask import Blueprint, jsonify, render_template, request, session
+from flask import (
+    Blueprint,
+    Response,
+    jsonify,
+    render_template,
+    request,
+    session,
+    stream_with_context,
+)
 
 import auth
 import config
@@ -858,6 +866,308 @@ def api_chat():
             }
         ),
         202,
+    )
+
+
+# ------------------ Routes: Chat streaming (SSE) ------------------
+
+# Headers that keep Server-Sent Events flowing unbuffered. ``X-Accel-Buffering:
+# no`` disables nginx response buffering; ``no-transform`` stops intermediaries
+# from gzipping/altering the stream (which would defeat token-by-token flush).
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format one Server-Sent Event frame: ``event: <name>`` + one
+    ``data: <json>`` line, terminated by a blank line.
+
+    Args:
+        event: The SSE event name (``chunk``/``done``/``queued``/``error``).
+        data: JSON-serializable payload.
+
+    Returns:
+        The encoded SSE frame string.
+    """
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@bp.post("/api/chat/stream")
+def api_chat_stream():
+    """POST /api/chat/stream — stream a chat turn token-by-token over SSE.
+
+    The streaming sibling of :func:`api_chat`. It runs the same validation
+    and rate limiting, then:
+
+    - If the selected adapter can stream (implements ``generate_stream``) and
+      the model is ready, it generates synchronously and streams the reply as
+      ``chunk`` events, finishing with a ``done`` event that carries the full
+      reply plus reference docs. The job row is persisted (``mark_done``) so
+      history and ``/api/job`` stay consistent with the queued path.
+    - Otherwise (non-streaming adapter or model not ready) it enqueues the job
+      exactly like :func:`api_chat` and emits a single ``queued`` event so the
+      client falls back to polling ``GET /api/job/<id>``.
+
+    Wire protocol (each frame is ``event: <name>\\n`` then ``data: <json>\\n\\n``):
+
+        event: chunk   data: {"text": "..."}                      # 0..N
+        event: done    data: {"ok": true, "reply", "references", "job_id", ...}
+        event: queued  data: {"ok": false, "job_id", "queue_position", ...}
+        event: error   data: {"ok": false, "error", "detail", "job_id"}
+
+    Pre-stream validation failures still reply as ordinary JSON (400/403/429).
+    """
+    locked = auth.require_unlocked()
+    if locked:
+        return locked
+
+    payload = request.get_json(silent=True) or {}
+    use_rag = bool(payload.get("use_rag", True))
+
+    msg = (payload.get("message") or payload.get("query") or "").strip()
+    if not msg:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Field 'message' must be a non-empty string",
+                }
+            ),
+            400,
+        )
+
+    user_id = payload.get("user_id", "none")
+    if not isinstance(user_id, str):
+        return (
+            jsonify({"ok": False, "error": "Field 'user_id' must be a string"}),
+            400,
+        )
+    user_id = user_id.strip()
+    if user_id == "none" or not user_id:
+        return (
+            jsonify(
+                {"ok": False, "error": "Field 'user_id' cannot be none or empty"}
+            ),
+            400,
+        )
+
+    model_type = payload.get("model_type", None)
+    if model_type is None:
+        return (
+            jsonify({"ok": False, "error": "Field 'model_type' was missing"}),
+            400,
+        )
+    if not model_adapters.is_valid_model_type(model_type):
+        return (
+            jsonify({"ok": False, "error": "Field 'model_type' was invalid"}),
+            400,
+        )
+
+    subsets = payload.get("subsets", None)
+
+    rag_algo_type = payload.get("rag_algo_type", None)
+    rag_algo_type = 5 if rag_algo_type is None else int(rag_algo_type)
+
+    # prompt_type: 1-indexed on the wire, 0-indexed internally (mirror api_chat).
+    n_prompts = len(model_prompts.MODEL_SYSTEM_PROMPTS)
+    raw_prompt_type = payload.get("prompt_type", None)
+    prompt_type = 0
+    if raw_prompt_type is not None:
+        try:
+            sent = int(raw_prompt_type)
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"Field 'prompt_type' must be an integer in 1..{n_prompts}",
+                    }
+                ),
+                400,
+            )
+        prompt_type = sent - 1
+        if prompt_type < 0 or prompt_type >= n_prompts:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"Field 'prompt_type' must be in 1..{n_prompts}",
+                    }
+                ),
+                400,
+            )
+
+    if not rate_limiter.check(user_id):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Chat request was rate limited. Please wait 30 seconds before resubmission.",
+                }
+            ),
+            429,
+        )
+
+    # Persist the job row up front (status='queued') so both the streaming and
+    # the queued fallback paths share one id that history/poll can resolve.
+    try:
+        job_id = db.insert_job(user_id, msg)
+    except Exception as e:
+        app_logger.exception("chat/stream: DB insert failed")
+        return (
+            jsonify(
+                {"ok": False, "error": "Could not insert job to database", "detail": str(e)}
+            ),
+            500,
+        )
+
+    model_adaptor = rag_controller.get_model_type(model_type)
+    streaming_capable = hasattr(model_adaptor, "generate_stream")
+    try:
+        model_ready = rag_controller.is_model_type_ready(model_type)
+    except Exception:
+        app_logger.exception("chat/stream: is_model_type_ready failed (swallowed)")
+        model_ready = False
+
+    # ---- Fallback: non-streaming adapter or model not ready -> queue ----
+    if not streaming_capable or not model_ready:
+        try:
+            queue_position = rag_controller.queue_job(
+                user_id, job_id, model_type, msg, subsets, rag_algo_type,
+                use_rag=use_rag, prompt_type=prompt_type,
+            )
+        except Exception as e:
+            app_logger.exception("chat/stream: queue_job failed; marking failed")
+            try:
+                db.mark_failed(job_id, f"Could not enqueue job: {e}")
+            except Exception:
+                app_logger.exception("chat/stream: follow-up mark_failed raised")
+
+            def _gen_err():
+                yield _sse("error", {
+                    "ok": False, "error": "Could not enqueue job",
+                    "detail": str(e), "job_id": job_id,
+                })
+            return Response(
+                stream_with_context(_gen_err()),
+                mimetype="text/event-stream", headers=_SSE_HEADERS,
+            )
+
+        queue_reason = "queue_busy" if model_ready else "model_warming"
+        app_logger.info(
+            f"chat/stream queued (capable={streaming_capable}, ready={model_ready}). "
+            f"user_id={user_id}, job_id={job_id}, position={queue_position}, "
+            f"model_type={model_type}"
+        )
+
+        def _gen_queued():
+            yield _sse("queued", {
+                "ok": False,
+                "status": "queued",
+                "job_id": job_id,
+                "user_id": user_id,
+                "poll_interval_ms": 1500,
+                "email_offer": email_responses.is_enabled(),
+                "queue_reason": queue_reason,
+                "queue_position": queue_position,
+                "detail": "Model not ready or non-streaming; job queued.",
+            })
+        return Response(
+            stream_with_context(_gen_queued()),
+            mimetype="text/event-stream", headers=_SSE_HEADERS,
+        )
+
+    # ---- Streaming path ----
+    try:
+        db.mark_processing(job_id)  # best-effort queued->processing
+    except Exception:
+        app_logger.exception("chat/stream: mark_processing failed (non-fatal)")
+
+    app_logger.info(
+        f"chat/stream generating. user_id={user_id}, job_id={job_id}, "
+        f"model_type={model_type}, use_rag={use_rag}, msg='{msg[:40]}...'"
+    )
+
+    def _gen_stream():
+        inflight_chat_reqs.inc()
+        try:
+            prep = corpus.prepare_chat_prompt(
+                model_type, msg,
+                use_rag=use_rag,
+                use_double_prompt=config.USE_DOUBLE_PROMPT,
+                subsets=subsets,
+                rag_algo_choice=rag_algo_type,
+                prompt_type=prompt_type,
+            )
+            adaptor = prep["model_adaptor"]
+
+            pieces = []
+            for piece in adaptor.generate_stream(
+                prep["user_content"],
+                system_prompt=prep["system_prompt"],
+                temperature=model_adapters.DEFAULT_TEMPERATURE,
+                max_new_tokens=model_adapters.DEFAULT_MAX_TOKENS,
+            ):
+                if piece:
+                    pieces.append(piece)
+                    yield _sse("chunk", {"text": piece})
+
+            answer = "".join(pieces).strip()
+            if prep.get("truncated"):
+                answer = "(Question truncated)\n\n" + answer
+
+            references = []
+            if use_rag:
+                try:
+                    raw_docs = corpus.fetch_chat_references(
+                        msg, answer, subsets=subsets, rag_algo_choice=rag_algo_type,
+                    )
+                    references = rag_controller.clean_rag_references(raw_docs)
+                except Exception:
+                    app_logger.exception(
+                        "chat/stream: reference fetch failed (non-fatal)"
+                    )
+                    references = []
+
+            # Persist using the same JSON blob shape the worker writes, so
+            # /api/job/<id> and history render identically to the queued path.
+            try:
+                db.mark_done(job_id, json.dumps({
+                    "reply": answer, "references": references,
+                }))
+            except Exception:
+                app_logger.exception("chat/stream: mark_done failed")
+
+            yield _sse("done", {
+                "ok": True,
+                "status": "done",
+                "reply": answer,
+                "references": references,
+                "job_id": job_id,
+                "user_id": user_id,
+                "detail": "success",
+            })
+        except Exception as e:
+            app_logger.exception("chat/stream: generation failed")
+            try:
+                db.mark_failed(job_id, f"Chat failed: {e}")
+            except Exception:
+                app_logger.exception("chat/stream: mark_failed raised")
+            yield _sse("error", {
+                "ok": False,
+                "error": "Chat failed",
+                "detail": str(e),
+                "job_id": job_id,
+            })
+        finally:
+            inflight_chat_reqs.dec()
+
+    return Response(
+        stream_with_context(_gen_stream()),
+        mimetype="text/event-stream", headers=_SSE_HEADERS,
     )
 
 

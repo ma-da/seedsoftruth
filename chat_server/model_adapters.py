@@ -11,7 +11,10 @@ Four concrete adapters implement that interface:
 
   - :class:`HFEndpointLLM`: a Hugging Face Inference Endpoint.
   - :class:`DeepInfraLlamaLLM`: DeepInfra's hosted Llama 3 models,
-    using the Llama 3 instruct chat template.
+    using the Llama 3 instruct chat template (buffered).
+  - :class:`DeepInfraStreamingLLM`: the same DeepInfra models via the
+    OpenAI-compatible chat-completions API with ``stream=true``, consuming
+    SSE deltas incrementally.
   - :class:`SparkCloudflareLLM`: a self-hosted Spark backend fronted by
     Cloudflare Access, using an OpenAI-style chat-completions API.
   - :class:`SimEndpointLLM`: a no-network simulation adapter for tests.
@@ -47,7 +50,7 @@ MODEL_TIMEOUT_SECS = 5
 
 model_logger = logging_config.get_logger("rag")
 
-MODEL_ADAPTOR_NAMES = ["hf", "deepinfra", "spark", "sim", "vllm"]
+MODEL_ADAPTOR_NAMES = ["hf", "deepinfra", "deepinfra_stream", "spark", "sim", "vllm"]
 
 # this is a server-end variable for selecting the hybrid rag algo
 DEFAULT_HYBRID_RAG_ALGO = 1
@@ -77,6 +80,43 @@ DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/inference"
 DEEPINFRA_DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct"
 
 LLAMA3_STOP: List[str] = ["<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"]
+
+# --- DeepInfra (OpenAI-compatible streaming) params ---
+# DeepInfraStreamingLLM talks to DeepInfra's OpenAI-compatible
+# chat-completions endpoint with stream=true, so tokens arrive incrementally
+# (keeping bytes flowing for any fronting proxy and defeating idle-read
+# timeouts on long generations) instead of as one buffered blob.
+#
+# Why a second DeepInfra adapter rather than streaming the existing one:
+# DeepInfraLlamaLLM posts to the *native* /v1/inference/{model} API and hand-
+# wraps the Llama-3 instruct template. The streaming path instead uses the
+# *OpenAI-compatible* /v1/openai/chat/completions API, where DeepInfra applies
+# the model's chat template server-side, so we send plain chat messages and
+# parse standard OpenAI SSE deltas (the same wire shape VLLMStreamingLLM
+# consumes). The two coexist: the native one stays the buffered default,
+# this one is the streaming variant.
+#
+# DeepInfra is a public managed API (no Cloudflare-Access wrapper), so unlike
+# VLLMStreamingLLM this adapter sends no CF-Access headers and has no /health
+# probe — readiness is a tiny one-token completion, matching DeepInfraLlamaLLM.
+DEEPINFRA_OPENAI_BASE_URL = (
+    os.getenv("DEEPINFRA_OPENAI_BASE_URL", "").strip()
+    or "https://api.deepinfra.com/v1/openai"
+)
+# Read timeout = max gap allowed between two streamed chunks. DeepInfra emits
+# tokens every <1s once decode begins; prefill on a long prompt can produce a
+# longer dark window, so 60s is a generous ceiling.
+DEEPINFRA_STREAM_READ_TIMEOUT_SECS = int(
+    os.getenv("SOT_DEEPINFRA_READ_TIMEOUT_SECS", "60")
+)
+DEEPINFRA_STREAM_CONNECT_TIMEOUT_SECS = int(
+    os.getenv("SOT_DEEPINFRA_CONNECT_TIMEOUT_SECS", "10")
+)
+# Hard cap on total wall-clock time per generate() call; defends against a
+# pathological stream that never terminates.
+DEEPINFRA_STREAM_TOTAL_TIMEOUT_SECS = int(
+    os.getenv("SOT_DEEPINFRA_TOTAL_TIMEOUT_SECS", "600")
+)
 
 # --- Spark / Cloudflare wrapper params ---
 SPARK_BASE_URL = "https://seedsoftruth.peerservice.org"
@@ -153,6 +193,53 @@ VLLM_TOTAL_TIMEOUT_SECS = int(os.getenv("SOT_VLLM_TOTAL_TIMEOUT_SECS", "600"))
 # SparkCloudflareLLM.health_url). Override to `/v1/models` for a pure
 # vLLM endpoint, or to any other path your reverse proxy exposes.
 VLLM_HEALTH_PATH = os.getenv("SOT_VLLM_HEALTH_PATH", "/health").strip() or "/health"
+
+
+def _iter_openai_sse_content(line_iter, *, total_timeout_secs=None, started_at=None):
+    """Yield ``choices[0].delta.content`` strings from an OpenAI-style SSE
+    line iterator.
+
+    Shared by the streaming adapters' ``generate_stream`` generators. Mirrors
+    the per-event parsing of their buffered ``generate`` loops, but yields
+    each text fragment as it arrives instead of accumulating. Blank lines,
+    non-``data:`` lines, comments, and malformed JSON are skipped; a
+    ``data: [DONE]`` line ends iteration. When ``total_timeout_secs`` and
+    ``started_at`` are supplied, iteration stops once the wall-clock budget is
+    exceeded (defends against a stream that never terminates).
+
+    Args:
+        line_iter: Iterable of raw SSE text lines (e.g. ``r.iter_lines``).
+        total_timeout_secs: Optional overall wall-clock budget in seconds.
+        started_at: Optional ``time.time()`` value marking the request start.
+
+    Yields:
+        str: Non-empty content deltas, in order.
+    """
+    for raw in line_iter:
+        if (
+            total_timeout_secs is not None
+            and started_at is not None
+            and time.time() - started_at > total_timeout_secs
+        ):
+            break
+        if not raw or not raw.startswith("data: "):
+            continue
+        payload_str = raw[len("data: "):]
+        if payload_str == "[DONE]":
+            break
+        try:
+            event = json.loads(payload_str)
+        except ValueError:
+            # Heartbeat / malformed line — skip rather than abort.
+            continue
+        choices = event.get("choices") if isinstance(event, dict) else None
+        if not isinstance(choices, list) or not choices:
+            continue
+        c0 = choices[0] or {}
+        delta = c0.get("delta") or {}
+        piece = delta.get("content")
+        if isinstance(piece, str) and piece:
+            yield piece
 
 
 def get_system_prompt(prompt_type: int) -> str:
@@ -1235,6 +1322,129 @@ class VLLMStreamingLLM(LLMStrategy):
         """Return the adapter's stable identifier string."""
         return "vllm_streaming_adapter"
 
+    def generate_stream(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float,
+        max_new_tokens: int,
+    ):
+        """Stream a chat completion, yielding each text fragment as it arrives.
+
+        The generator companion to :meth:`generate`: yields ``delta.content``
+        fragments incrementally so a caller can forward them to the browser
+        over Server-Sent Events. If an intermediary buffers the SSE into a
+        single non-streaming body, the recovered text is yielded once.
+
+        Args:
+            prompt: The user message to send.
+            system_prompt: Optional system message; not defaulted here.
+            temperature: Sampling temperature in [0, 2].
+            max_new_tokens: Maximum tokens to generate (>= 1).
+
+        Yields:
+            str: Text fragments of the model's reply, in order.
+
+        Raises:
+            RuntimeError: On validation failure, connection error, or a
+                non-OK HTTP status from the endpoint.
+        """
+        self.prevalidate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+        headers = self.generate_header()
+        payload = self.generate_payload(
+            prompt, system_prompt=system_prompt,
+            temperature=temperature, max_new_tokens=max_new_tokens,
+        )
+        started_at = time.time()
+        try:
+            r = requests.post(
+                self.endpoint_url, headers=headers, json=payload,
+                timeout=(self.connect_timeout_secs, self.read_timeout_secs),
+                stream=True,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"vLLM connection failed: {e}")
+
+        if not r.ok:
+            body = ""
+            try:
+                body = (r.text or "")[:2000]
+            except Exception:
+                pass
+            r.close()
+            raise RuntimeError(f"vLLM error {r.status_code}: {body}")
+
+        content_type = (r.headers.get("Content-Type") or "").lower()
+        if "text/event-stream" not in content_type:
+            recovered = self._recover_buffered_text(r, content_type)
+            if recovered:
+                yield recovered
+            return
+
+        try:
+            yield from _iter_openai_sse_content(
+                r.iter_lines(decode_unicode=True),
+                total_timeout_secs=self.total_timeout_secs,
+                started_at=started_at,
+            )
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+    def _recover_buffered_text(self, r, content_type: str) -> str:
+        """Recover answer text from a non-SSE (buffered) streaming response.
+
+        Used by :meth:`generate_stream` when a fronting wrapper returns a
+        non-``text/event-stream`` body. Tries, in order: raw SSE mislabeled
+        under the wrong Content-Type, the standard chat-completions JSON
+        shape, then any string value carrying embedded SSE events (the
+        error-envelope pathology this adapter was hardened against).
+
+        Args:
+            r: The already-fetched ``requests.Response`` (will be closed).
+            content_type: The lower-cased response Content-Type.
+
+        Returns:
+            The recovered text, or "" if nothing usable was found.
+        """
+        body_text = ""
+        try:
+            body_text = r.text or ""
+        except Exception:
+            pass
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+        model_logger.warning(
+            "vLLM streaming endpoint returned non-streaming Content-Type=%r; "
+            "using buffered fallback.",
+            content_type,
+        )
+        extracted = self._parse_sse_chunks(body_text).strip()
+        if extracted:
+            return extracted
+        try:
+            data = json.loads(body_text)
+        except ValueError:
+            return ""
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                text = self.parse_results_text(data).strip()
+                if text:
+                    return text
+            for v in data.values():
+                if isinstance(v, str) and "data: " in v:
+                    extracted = self._parse_sse_chunks(v).strip()
+                    if extracted:
+                        return extracted
+        return ""
+
     def generate(
         self,
         prompt: str,
@@ -1667,6 +1877,594 @@ class VLLMStreamingLLM(LLMStrategy):
             return False
 
 
+class DeepInfraStreamingLLM(LLMStrategy):
+    """
+    Streaming adapter for DeepInfra-hosted Llama 3 models via DeepInfra's
+    OpenAI-compatible ``/v1/openai/chat/completions`` endpoint with
+    ``stream=true``.
+
+    Relationship to the other DeepInfra adapter:
+        :class:`DeepInfraLlamaLLM` posts to the *native* ``/v1/inference``
+        API and hand-wraps the Llama-3 instruct template, returning the whole
+        completion in one buffered response. This adapter instead consumes the
+        OpenAI-style SSE stream incrementally — DeepInfra applies the chat
+        template server-side, so we send plain chat messages. Tokens arrive
+        roughly once per generated token, keeping bytes flowing continuously
+        (useful behind any proxy that enforces an idle-read timeout) and
+        matching the wire shape :class:`VLLMStreamingLLM` already parses.
+
+    Buffer-and-return contract:
+        Like :class:`VLLMStreamingLLM`, this accumulates the ``delta.content``
+        chunks and returns the concatenated string from :meth:`generate`, so
+        the rest of the pipeline (chat_with_corpus, worker, /api/job) is
+        unchanged. End-to-end streaming to the browser would be a separate
+        change; the immediate goal is incremental, timeout-resistant
+        generation against a reliable public endpoint.
+
+    Wire format (each SSE event from DeepInfra):
+        data: {"choices":[{"delta":{"content":"Hello"}}], ...}
+        data: {"choices":[{"delta":{"content":" world"}}], ...}
+        ...
+        data: [DONE]
+    """
+
+    def __init__(
+        self,
+        *,
+        api_token: str,
+        model: str = DEEPINFRA_DEFAULT_MODEL,
+        base_url: str = DEEPINFRA_OPENAI_BASE_URL,
+        read_timeout_secs: int = DEEPINFRA_STREAM_READ_TIMEOUT_SECS,
+        connect_timeout_secs: int = DEEPINFRA_STREAM_CONNECT_TIMEOUT_SECS,
+        total_timeout_secs: int = DEEPINFRA_STREAM_TOTAL_TIMEOUT_SECS,
+    ):
+        """Initialize the streaming DeepInfra adapter.
+
+        Args:
+            api_token: DeepInfra API bearer token (``DEEPINFRA_TOKEN``).
+            model: DeepInfra model identifier passed in the request payload.
+            base_url: OpenAI-compatible API root; the chat-completions path is
+                appended to form the endpoint URL.
+            read_timeout_secs: Per-read socket timeout for streamed responses.
+            connect_timeout_secs: Connection-establishment timeout.
+            total_timeout_secs: Overall wall-clock budget for a request.
+        """
+        self.api_token = api_token
+        self.model_name = model
+        self.base_url = base_url.rstrip("/")
+        self.endpoint_url = f"{self.base_url}/chat/completions"
+        self.read_timeout_secs = read_timeout_secs
+        self.connect_timeout_secs = connect_timeout_secs
+        self.total_timeout_secs = total_timeout_secs
+
+    def name(self) -> str:
+        """Return the adapter's stable identifier string.
+
+        Returns:
+            str: ``"deepinfra_streaming_adapter"``.
+        """
+        return "deepinfra_streaming_adapter"
+
+    def generate_stream(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float,
+        max_new_tokens: int,
+    ):
+        """Stream a chat completion, yielding each text fragment as it arrives.
+
+        The generator companion to :meth:`generate`: instead of accumulating
+        the deltas and returning one string, it yields ``delta.content``
+        fragments incrementally so a caller can forward them to the browser
+        over Server-Sent Events. If an intermediary buffers the SSE into a
+        single non-streaming JSON body, the recovered text is yielded once.
+
+        Args:
+            prompt: The user message to send.
+            system_prompt: Optional system message; not defaulted here.
+            temperature: Sampling temperature in [0, 2].
+            max_new_tokens: Maximum tokens to generate (>= 1).
+
+        Yields:
+            str: Text fragments of the model's reply, in order.
+
+        Raises:
+            RuntimeError: On validation failure, connection error, or a
+                non-OK HTTP status from the endpoint.
+        """
+        self.prevalidate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+        headers = self.generate_header()
+        payload = self.generate_payload(
+            prompt, system_prompt=system_prompt,
+            temperature=temperature, max_new_tokens=max_new_tokens,
+        )
+        started_at = time.time()
+        try:
+            r = requests.post(
+                self.endpoint_url, headers=headers, json=payload,
+                timeout=(self.connect_timeout_secs, self.read_timeout_secs),
+                stream=True,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"DeepInfra connection failed: {e}")
+
+        if not r.ok:
+            body = ""
+            try:
+                body = (r.text or "")[:2000]
+            except Exception:
+                pass
+            r.close()
+            raise RuntimeError(f"DeepInfra error {r.status_code}: {body}")
+
+        content_type = (r.headers.get("Content-Type") or "").lower()
+        if "text/event-stream" not in content_type:
+            # Buffered (non-streaming) fallback: recover the whole answer and
+            # yield it once so a streaming caller still receives the text.
+            recovered = self._recover_buffered_text(r, content_type)
+            if recovered:
+                yield recovered
+            return
+
+        try:
+            yield from _iter_openai_sse_content(
+                r.iter_lines(decode_unicode=True),
+                total_timeout_secs=self.total_timeout_secs,
+                started_at=started_at,
+            )
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+    def _recover_buffered_text(self, r, content_type: str) -> str:
+        """Recover answer text from a non-SSE (buffered) streaming response.
+
+        Used by :meth:`generate_stream` when an intermediary returns a
+        non-``text/event-stream`` body. Tries, in order: raw SSE mislabeled
+        under the wrong Content-Type, the standard chat-completions JSON
+        shape, then any string value carrying embedded SSE events.
+
+        Args:
+            r: The already-fetched ``requests.Response`` (will be closed).
+            content_type: The lower-cased response Content-Type.
+
+        Returns:
+            The recovered text, or "" if nothing usable was found.
+        """
+        body_text = ""
+        try:
+            body_text = r.text or ""
+        except Exception:
+            pass
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+        model_logger.warning(
+            "DeepInfra streaming endpoint returned non-streaming "
+            "Content-Type=%r; using buffered fallback.",
+            content_type,
+        )
+        extracted = self._parse_sse_chunks(body_text).strip()
+        if extracted:
+            return extracted
+        try:
+            data = json.loads(body_text)
+        except ValueError:
+            return ""
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                text = self.parse_results_text(data).strip()
+                if text:
+                    return text
+            for v in data.values():
+                if isinstance(v, str) and "data: " in v:
+                    extracted = self._parse_sse_chunks(v).strip()
+                    if extracted:
+                        return extracted
+        return ""
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float,
+        max_new_tokens: int,
+    ) -> str:
+        """Stream a chat completion and return the full concatenated text.
+
+        Opens a streaming POST to the chat-completions endpoint, reads the
+        SSE chunks as they arrive, and joins the deltas into the final answer.
+
+        Args:
+            prompt: The user message to send.
+            system_prompt: Optional system message; not defaulted here, to
+                avoid duplicating a prompt the caller already supplied.
+            temperature: Sampling temperature in [0, 2].
+            max_new_tokens: Maximum tokens to generate (>= 1).
+
+        Returns:
+            The concatenated generated text.
+
+        Raises:
+            RuntimeError: On validation failure, connection error, or a
+                non-OK HTTP status from the endpoint.
+        """
+        self.prevalidate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+
+        headers = self.generate_header()
+        payload = self.generate_payload(
+            prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+        )
+
+        chunks: List[str] = []
+        started_at = time.time()
+
+        # stream=True tells urllib3 NOT to download the whole body before
+        # returning — the connection stays open and we read it chunk-by-chunk
+        # via iter_lines(), so bytes flow continuously.
+        try:
+            r = requests.post(
+                self.endpoint_url,
+                headers=headers,
+                json=payload,
+                timeout=(self.connect_timeout_secs, self.read_timeout_secs),
+                stream=True,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"DeepInfra connection failed: {e}")
+
+        if not r.ok:
+            body = ""
+            try:
+                body = (r.text or "")[:2000]
+            except Exception:
+                pass
+            r.close()
+            raise RuntimeError(f"DeepInfra error {r.status_code}: {body}")
+
+        # Defensive non-SSE fallback: if some intermediary buffered the SSE and
+        # re-emitted it as a single non-streaming JSON body, recover the text
+        # rather than returning empty. Strategies mirror VLLMStreamingLLM:
+        #   A. raw SSE under the wrong Content-Type, B. standard chat JSON,
+        #   C. any string value carrying embedded SSE events.
+        content_type = (r.headers.get("Content-Type") or "").lower()
+        if "text/event-stream" not in content_type:
+            body_text = ""
+            try:
+                body_text = r.text or ""
+            except Exception:
+                pass
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            model_logger.warning(
+                "DeepInfra streaming endpoint returned non-streaming "
+                "Content-Type=%r; using buffered fallback.",
+                content_type,
+            )
+
+            extracted = self._parse_sse_chunks(body_text).strip()
+            if extracted:
+                return extracted
+
+            try:
+                data = json.loads(body_text)
+            except ValueError:
+                raise RuntimeError(
+                    f"DeepInfra returned non-SSE Content-Type={content_type!r}, "
+                    f"no SSE chunks found, and body was not valid JSON; "
+                    f"first 500 chars: {body_text[:500]!r}"
+                )
+
+            if isinstance(data, dict):
+                choices = data.get("choices")
+                if isinstance(choices, list) and choices:
+                    text = self.parse_results_text(data).strip()
+                    if text:
+                        return text
+                for v in data.values():
+                    if isinstance(v, str) and "data: " in v:
+                        extracted = self._parse_sse_chunks(v).strip()
+                        if extracted:
+                            return extracted
+
+            raise RuntimeError(
+                f"DeepInfra returned non-SSE body with no recognizable content; "
+                f"Content-Type={content_type!r}, first 500 chars: "
+                f"{body_text[:500]!r}"
+            )
+
+        try:
+            for raw in r.iter_lines(decode_unicode=True):
+                # Total-wallclock guard — bounds runaway streams.
+                if time.time() - started_at > self.total_timeout_secs:
+                    model_logger.warning(
+                        "DeepInfra stream exceeded total timeout %ss; closing.",
+                        self.total_timeout_secs,
+                    )
+                    break
+
+                if not raw:
+                    continue
+                if not raw.startswith("data: "):
+                    continue
+
+                payload_str = raw[len("data: "):]
+                if payload_str == "[DONE]":
+                    break
+
+                try:
+                    event = json.loads(payload_str)
+                except ValueError:
+                    # Heartbeat / malformed line — skip rather than abort.
+                    continue
+
+                choices = event.get("choices") if isinstance(event, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    continue
+                c0 = choices[0] or {}
+                delta = c0.get("delta") or {}
+                piece = delta.get("content")
+                if isinstance(piece, str) and piece:
+                    chunks.append(piece)
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+        return "".join(chunks).strip()
+
+    def _parse_sse_chunks(self, body: str) -> str:
+        """Parse a complete SSE body (newline-separated ``data: ...`` events)
+        into concatenated content.
+
+        Used by the non-streaming fallback in :meth:`generate` when an
+        upstream buffers SSE and re-emits it as a single string. Mirrors the
+        per-event logic of the main streaming loop but operates on an
+        already-fetched string.
+
+        Args:
+            body: The buffered SSE text.
+
+        Returns:
+            The concatenated ``delta.content`` values.
+        """
+        pieces: List[str] = []
+        for line in body.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload_str = line[len("data: "):].strip()
+            if not payload_str or payload_str == "[DONE]":
+                continue
+            try:
+                event = json.loads(payload_str)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            c0 = choices[0] or {}
+            delta = c0.get("delta") or {}
+            piece = delta.get("content")
+            if isinstance(piece, str) and piece:
+                pieces.append(piece)
+        return "".join(pieces)
+
+    def prevalidate(self, prompt: str, *, max_new_tokens: int, temperature: float) -> str:
+        """Validate adapter config and request arguments before sending.
+
+        Args:
+            prompt: Must be a non-empty string.
+            max_new_tokens: Must be an int >= 1.
+            temperature: Must be a float in [0, 2].
+
+        Raises:
+            RuntimeError: If the endpoint URL or API token is unset, or any
+                argument is out of range.
+        """
+        if not self.endpoint_url:
+            raise RuntimeError("Missing DeepInfra endpoint_url")
+        if not self.api_token:
+            raise RuntimeError("Missing DEEPINFRA_TOKEN / api_token")
+        if not self.model_name:
+            raise RuntimeError("Missing DeepInfra model id")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise RuntimeError("prompt must be a non-empty string")
+        if not isinstance(max_new_tokens, int) or max_new_tokens < 1:
+            raise RuntimeError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
+        t = float(temperature)
+        if t < 0.0 or t > 2.0:
+            raise RuntimeError(f"temperature must be in [0, 2], got {temperature}")
+
+    def generate_header(self) -> Dict[str, str]:
+        """Build request headers for a streaming chat call.
+
+        Sets JSON content type and an SSE ``Accept`` header, plus bearer auth
+        from the DeepInfra token. No Cloudflare-Access headers — DeepInfra is
+        a public managed API.
+
+        Returns:
+            Dict[str, str]: The header dict to send with the request.
+        """
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        if self.api_token:
+            h["Authorization"] = f"Bearer {self.api_token}"
+        return h
+
+    def generate_payload(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Optional[str] = None,
+        max_new_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float = DEFAULT_TEMPERATURE,
+    ) -> Dict[str, Any]:
+        """Build the OpenAI-shaped streaming chat-completions payload.
+
+        Includes a system message only when ``system_prompt`` is provided (it
+        is intentionally not defaulted, to avoid duplicating a prompt the
+        caller already passed — see the 2026-05-29 bugfix in
+        rag_controller.ask).
+
+        Args:
+            prompt: The user message content.
+            system_prompt: Optional system message content.
+            max_new_tokens: Maps to ``max_tokens`` in the payload.
+            temperature: Sampling temperature.
+
+        Returns:
+            Dict[str, Any]: The request body with ``stream`` set to True.
+        """
+        messages: List[Dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": float(temperature),
+            "max_tokens": int(max_new_tokens),
+            "stream": True,
+        }
+
+    def parse_results_text(self, data: Any) -> str:
+        """Extract answer text from a non-streaming response body.
+
+        Provided to satisfy the adapter ABC and to back the buffered fallback
+        in :meth:`generate`. Reads ``choices[0].message.content`` (or
+        ``choices[0].text``) when present, else falls back to ``str(data)``.
+
+        Args:
+            data: A decoded response object (typically a dict).
+
+        Returns:
+            The extracted text, or an empty string when ``data`` is None.
+        """
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                c0 = choices[0] or {}
+                txt = (
+                    (c0.get("message") or {}).get("content")
+                    or c0.get("text")
+                    or ""
+                )
+                if isinstance(txt, str) and txt:
+                    return txt
+        return str(data) if data is not None else ""
+
+    async def is_model_ready(self, timeout: int = MODEL_TIMEOUT_SECS) -> bool:
+        """Check whether the DeepInfra model is ready.
+
+        Sends a tiny one-token, non-streaming chat completion and treats an
+        HTTP 200 as ready. DeepInfra exposes no ``/health`` endpoint, so this
+        mirrors :meth:`DeepInfraLlamaLLM.is_model_ready` (a one-token probe).
+
+        Args:
+            timeout: Per-request timeout in seconds.
+
+        Returns:
+            bool: ``True`` if the request returned HTTP 200, ``False`` for
+            auth errors, other statuses, or exceptions.
+        """
+        try:
+            r = requests.post(
+                self.endpoint_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    **(
+                        {"Authorization": f"Bearer {self.api_token}"}
+                        if self.api_token
+                        else {}
+                    ),
+                },
+                json={
+                    "model": self.model_name,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "temperature": 0.0,
+                    "max_tokens": 1,
+                    "stream": False,
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200:
+                _ = r.json()
+                return True
+            if r.status_code in (401, 403):
+                model_logger.info(
+                    "DeepInfra readiness probe at %s returned %s (auth)",
+                    self.endpoint_url, r.status_code,
+                )
+                return False
+            model_logger.info(
+                "DeepInfra readiness probe at %s returned %s",
+                self.endpoint_url, r.status_code,
+            )
+            return False
+        except Exception as e:
+            model_logger.info(
+                "DeepInfra readiness probe at %s failed: %s",
+                self.endpoint_url, e,
+            )
+            return False
+
+    async def send_warmup(self) -> bool:
+        """Issue a tiny streamed generation to warm up the endpoint.
+
+        Acts as both a model warmup and a connectivity smoke test; the
+        generated content is discarded.
+
+        Returns:
+            True if the warmup request returned HTTP 200, else False.
+        """
+        try:
+            r = requests.post(
+                self.endpoint_url,
+                headers=self.generate_header(),
+                json={
+                    "model": self.model_name,
+                    "messages": [{"role": "user", "content": HF_WARMUP_PROMPT}],
+                    "temperature": 0.1,
+                    "max_tokens": HF_WARMUP_MAX_NEW_TOKENS,
+                    "stream": True,
+                },
+                timeout=(self.connect_timeout_secs, self.read_timeout_secs),
+                stream=True,
+            )
+            ok = r.status_code == 200
+            try:
+                # Drain at least one chunk so the connection actually
+                # exchanges bytes (some proxies upgrade a stream lazily).
+                for _ in r.iter_lines(decode_unicode=True):
+                    break
+            finally:
+                r.close()
+            return ok
+        except Exception as e:
+            model_logger.warning(f"DeepInfra warm-up failed: {e}")
+            return False
+
+
 # This is simulated endpoint just for testing
 class SimEndpointLLM(LLMStrategy):
     """No-network simulation LLM adapter for testing.
@@ -1825,6 +2623,18 @@ class LLMFactory:
         if kind == "deepinfra":
             model_logger.info("Creating DeepInfra model adapter")
             return DeepInfraLlamaLLM(
+                api_token=os.environ.get("DEEPINFRA_TOKEN", ""),
+                model=os.environ.get(
+                    "DEEPINFRA_MODEL", DEEPINFRA_DEFAULT_MODEL
+                ),
+            )
+
+        if kind == "deepinfra_stream":
+            model_logger.info(
+                "Creating DeepInfra streaming model adapter (model=%s)",
+                os.environ.get("DEEPINFRA_MODEL", DEEPINFRA_DEFAULT_MODEL),
+            )
+            return DeepInfraStreamingLLM(
                 api_token=os.environ.get("DEEPINFRA_TOKEN", ""),
                 model=os.environ.get(
                     "DEEPINFRA_MODEL", DEEPINFRA_DEFAULT_MODEL

@@ -74,6 +74,7 @@ const CFG = {
     ACCESS: '/api/access',
     SEARCH: '/api/search',
     CHAT: '/api/chat',
+    CHAT_STREAM: '/api/chat/stream',  // POST -> Server-Sent Events
     AB: '/api/ab',
     FEEDBACK: '/api/feedback',
     STATUS: '/api/status',
@@ -490,13 +491,22 @@ function escapeHtml(s) {
 }
 
 /**
- * Renders a small subset of Markdown (links, inline code, bold, italic,
- * line breaks) to HTML. Safe-ish: the input is HTML-escaped first, then
- * only a limited set of tags is re-introduced.
+ * Renders a subset of Markdown to HTML. Safe-ish: the input is HTML-escaped
+ * first, then only a limited set of tags is re-introduced.
+ *
+ * Inline elements (always): links, inline code, bold, italic, line breaks.
+ * Block elements (opt-in via ``opts.blocks``): ATX headers (#..######),
+ * unordered/ordered lists, blockquotes, fenced code blocks, and paragraphs.
+ * Block mode is used for the chat/streaming reply; the lightweight inline-only
+ * mode (default) preserves the original behavior for reference snippets.
+ *
  * @param {*} md Plain-text Markdown input (coerced to string).
+ * @param {{blocks?: boolean}} [opts] Set ``blocks: true`` to enable
+ *   block-level rendering (headers, lists, blockquotes, fenced code).
  * @returns {string} The resulting HTML string.
  */
-function renderMiniMarkdown(md) {
+function renderMiniMarkdown(md, opts) {
+  const useBlocks = !!(opts && opts.blocks);
   // Input should be plain text (NOT HTML). We'll return safe-ish HTML.
   let s = String(md ?? '');
 
@@ -504,7 +514,7 @@ function renderMiniMarkdown(md) {
   s = s.replace(/\r\n/g, '\n');
 
   // ---------- Escape HTML first ----------
-  // (We will re-introduce only a/strong/em/code/br)
+  // (We will re-introduce only a/strong/em/code/br + block tags)
   s = s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -524,6 +534,16 @@ function renderMiniMarkdown(md) {
     text.replace(/\uE000(\d+)\uE001/g, (_, i) => placeholders[Number(i)] ?? '');
 
   const escapeAttr = (x) => String(x).replace(/"/g, '%22');
+
+  // ---------- Fenced code blocks: ```lang\n...\n``` (blocks mode) ----------
+  // Extracted first (as protected placeholders) so the inline rules below and
+  // the block assembler don't touch code contents. The content is already
+  // HTML-escaped above, so it's safe to drop straight into <pre><code>.
+  if (useBlocks) {
+    s = s.replace(/```[^\n]*\n([\s\S]*?)```/g, (m, code) =>
+      put(`<pre class="md-pre"><code>${code.replace(/\n+$/, '')}</code></pre>`)
+    );
+  }
 
   // ---------- Markdown links: [text](url) and [text](<url>) ----------
   // Notes:
@@ -560,11 +580,95 @@ function renderMiniMarkdown(md) {
     '$1<em>$2</em>',
   );
 
-  // ---------- Line breaks ----------
-  s = s.replace(/\n/g, '<br>');
+  if (!useBlocks) {
+    // ---------- Inline-only mode: newlines become <br> (original behavior) ----------
+    s = s.replace(/\n/g, '<br>');
+    return restore(s);
+  }
 
-  // Restore protected HTML segments
-  return restore(s);
+  // ---------- Block assembly (headers, lists, blockquotes, paragraphs) ----------
+  // Operates line-by-line on the inline-formatted text. Consecutive list /
+  // blockquote lines are grouped; runs of plain lines become a <p> with <br>
+  // joins; lone placeholders (e.g. fenced code blocks) pass through as blocks.
+  const isPlaceholderOnly = (ln) => /^\d+$/.test(ln.trim());
+  const reH = /^(#{1,6})\s+(.*)$/;
+  const reQuote = /^\s*&gt;\s?/;      // '>' was escaped to '&gt;'
+  const reUL = /^\s*[-*+]\s+(.*)$/;
+  const reOL = /^\s*\d+\.\s+(.*)$/;
+
+  const lines = s.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (trimmed === '') { i++; continue; }
+
+    // Lone placeholder (fenced code block, etc.) -> emit as its own block.
+    if (isPlaceholderOnly(line)) { out.push(trimmed); i++; continue; }
+
+    // ATX header -> <h3>..<h6> (markdown level + 2, clamped) so a single '#'
+    // doesn't render as an oversized page title inside a chat bubble.
+    const h = reH.exec(line);
+    if (h) {
+      const lvl = Math.min(h[1].length + 2, 6);
+      out.push(`<h${lvl} class="md-h">${h[2].trim()}</h${lvl}>`);
+      i++; continue;
+    }
+
+    // Blockquote — gather consecutive '>' lines.
+    if (reQuote.test(line)) {
+      const quote = [];
+      while (i < lines.length && reQuote.test(lines[i])) {
+        quote.push(lines[i].replace(reQuote, ''));
+        i++;
+      }
+      out.push('<blockquote class="md-quote">' + quote.join('<br>') + '</blockquote>');
+      continue;
+    }
+
+    // Unordered list — gather consecutive '-', '*', '+' items.
+    if (reUL.test(line)) {
+      const items = [];
+      while (i < lines.length && reUL.test(lines[i])) {
+        items.push('<li>' + lines[i].replace(reUL, '$1').trim() + '</li>');
+        i++;
+      }
+      out.push('<ul class="md-ul">' + items.join('') + '</ul>');
+      continue;
+    }
+
+    // Ordered list — gather consecutive 'N.' items.
+    if (reOL.test(line)) {
+      const items = [];
+      while (i < lines.length && reOL.test(lines[i])) {
+        items.push('<li>' + lines[i].replace(reOL, '$1').trim() + '</li>');
+        i++;
+      }
+      out.push('<ol class="md-ol">' + items.join('') + '</ol>');
+      continue;
+    }
+
+    // Paragraph — gather consecutive plain lines until a blank line or a line
+    // that starts a different block.
+    const para = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() !== '' &&
+      !isPlaceholderOnly(lines[i]) &&
+      !reH.test(lines[i]) &&
+      !reQuote.test(lines[i]) &&
+      !reUL.test(lines[i]) &&
+      !reOL.test(lines[i])
+    ) {
+      para.push(lines[i]);
+      i++;
+    }
+    if (para.length) out.push('<p class="md-p">' + para.join('<br>') + '</p>');
+  }
+
+  return restore(out.join('\n'));
 }
 
 /**
@@ -2607,6 +2711,215 @@ async function apiChat(payload) {
 }
 
 /**
+ * Streaming-capable model adapters. The chat send path routes these through
+ * /api/chat/stream (Server-Sent Events) for a live token-by-token reply;
+ * everything else uses the queued /api/chat + pollJob path unchanged. Keep in
+ * sync with the adapters that implement generate_stream() in model_adapters.py
+ * and with the dev-mode dropdown options.
+ */
+const STREAMING_MODEL_TYPES = new Set(['deepinfra_stream', 'vllm']);
+
+/**
+ * POSTs a chat turn to /api/chat/stream and consumes the Server-Sent Events
+ * response, dispatching each frame to the supplied handlers. Pre-stream
+ * failures (validation 400, rate-limit 429, gate 403) arrive as ordinary JSON
+ * and are thrown as Errors (with `.status`) so the caller's catch can handle
+ * them like the non-streaming path.
+ *
+ * @param {!Object} payload The chat request body.
+ * @param {{onChunk?:function(string):void, onDone?:function(Object):void,
+ *          onQueued?:function(Object):void, onError?:function(Object):void}} h
+ *   Event handlers.
+ * @returns {Promise<void>}
+ */
+async function apiChatStream(payload, h = {}) {
+  const { onChunk, onDone, onQueued, onError } = h;
+  const res = await fetch(CFG.API.CHAT_STREAM, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    credentials: 'same-origin',
+    body: JSON.stringify(payload),
+  });
+
+  const ct = (res.headers.get('Content-Type') || '').toLowerCase();
+  if (!ct.includes('text/event-stream')) {
+    // Pre-stream failure (validation / rate limit / gate) — JSON, not SSE.
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      const e = new Error(data?.error || data?.message || `HTTP ${res.status}`);
+      e.status = res.status;
+      throw e;
+    }
+    onError?.({ error: data?.error || 'Unexpected non-streaming response' });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  const dispatch = (rawEvent) => {
+    let name = 'message';
+    let dataStr = '';
+    for (const line of rawEvent.split('\n')) {
+      if (line.startsWith('event:')) name = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+    }
+    let data = {};
+    if (dataStr) {
+      try { data = JSON.parse(dataStr); } catch (_) { data = { text: dataStr }; }
+    }
+    if (name === 'chunk') onChunk?.(data.text || '');
+    else if (name === 'done') onDone?.(data);
+    else if (name === 'queued') onQueued?.(data);
+    else if (name === 'error') onError?.(data);
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line.
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const rawEvent = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if (rawEvent.trim()) dispatch(rawEvent);
+    }
+  }
+  if (buf.trim()) dispatch(buf);  // flush a trailing frame, if any
+}
+
+/**
+ * Builds a throttled, markdown-rendering sink bound to one bubble element.
+ * push() appends a chunk and re-renders the accumulated text as formatted
+ * Markdown (coalesced so a fast token stream doesn't thrash the parser);
+ * finalize() does a last render (optionally swapping in a server-cleaned
+ * final reply) and stops further updates. `.text` exposes the accumulator.
+ *
+ * @param {!Element} el The bubble's text element.
+ * @returns {{push:function(string):void, finalize:function(string=):void, text:string}}
+ */
+function makeStreamRenderer(el) {
+  let acc = '';
+  let finalized = false;
+  let scheduled = false;
+  let lastRender = 0;
+  const MIN_MS = 60;
+
+  if (el) el.classList.add('md-rendered');
+
+  const render = () => {
+    if (!el) return;
+    // Follow the stream only if the user is already near the bottom, so
+    // scrolling up to read isn't yanked back on every token.
+    const wrap = els.messagesEl;
+    const nearBottom =
+      !wrap || (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight) < 80;
+    el.innerHTML = renderMiniMarkdown(acc, { blocks: true });
+    if (nearBottom && typeof scrollChatToBottom === 'function') scrollChatToBottom();
+  };
+
+  return {
+    push(chunk) {
+      if (finalized) return;
+      acc += String(chunk ?? '');
+      const now = Date.now();
+      if (now - lastRender >= MIN_MS) {
+        lastRender = now;
+        render();
+      } else if (!scheduled) {
+        scheduled = true;
+        setTimeout(() => {
+          scheduled = false;
+          lastRender = Date.now();
+          render();
+        }, MIN_MS);
+      }
+    },
+    finalize(finalText) {
+      finalized = true;
+      if (typeof finalText === 'string' && finalText) acc = finalText;
+      if (el) {
+        el.classList.add('md-rendered');
+        el.innerHTML = renderMiniMarkdown(acc, { blocks: true });
+      }
+    },
+    get text() {
+      return acc;
+    },
+  };
+}
+
+/**
+ * Runs a streamed chat turn against /api/chat/stream, rendering tokens into
+ * `chatBotUI` live as Markdown. Returns true when the turn was fully handled
+ * here (streamed to a done reply, or an error was shown). Returns false when
+ * the server queued the job instead (model not ready); in that case the
+ * queued event is stashed on `payload.__queued` so the caller resumes the
+ * normal /api/job polling path. Throws (propagating to the caller's catch)
+ * on pre-stream failures like 403/429/network, matching the non-stream path.
+ *
+ * @param {!Object} payload The chat request body.
+ * @param {string} text The user's message (for pushTurn).
+ * @param {!Object} chatBotUI The placeholder bubble ({textEl, setSnippet}).
+ * @param {string} userId The current user id.
+ * @returns {Promise<boolean>} true if handled here; false if queued.
+ */
+async function runChatStream(payload, text, chatBotUI, userId) {
+  const streamRenderer = makeStreamRenderer(chatBotUI.textEl);
+  let firstChunk = true;
+  let doneData = null;
+  let queuedData = null;
+  let errorData = null;
+
+  await apiChatStream(payload, {
+    onChunk: (piece) => {
+      if (!piece) return;
+      if (firstChunk) {
+        firstChunk = false;
+        // Drop the "Asking…" waiting copy the instant real content begins.
+        if (chatBotUI?.textEl) chatBotUI.textEl.textContent = '';
+      }
+      streamRenderer.push(piece);
+    },
+    onDone: (d) => { doneData = d; },
+    onQueued: (d) => { queuedData = d; },
+    onError: (d) => { errorData = d; },
+  });
+
+  // Model not ready: server queued the job. Restore the plain-text bubble and
+  // hand back to the caller's polling path via payload.__queued.
+  if (queuedData) {
+    if (chatBotUI?.textEl) chatBotUI.textEl.classList.remove('md-rendered');
+    payload.__queued = queuedData;
+    return false;
+  }
+
+  if (errorData) {
+    const detail = errorData.detail || errorData.error || 'Chat failed.';
+    if (chatBotUI?.textEl) {
+      chatBotUI.textEl.classList.remove('md-rendered');
+      chatBotUI.textEl.textContent = detail;
+    }
+    pushStatusMessage(detail);
+    setReferences([]);
+    return true;
+  }
+
+  // Success: finalize with the server-cleaned reply (falls back to the raw
+  // streamed text if the done event was empty).
+  const d = doneData || {};
+  const finalReply = d.reply || streamRenderer.text || '(no reply)';
+  streamRenderer.finalize(finalReply);
+  chatBotUI.setSnippet?.(finalReply);
+  pushTurn(text, finalReply);
+  setReferences(Array.isArray(d.references) ? d.references : []);
+  return true;
+}
+
+/**
  * POSTs an A/B request to /api/ab.
  * @param {!Object} payload The A/B request body.
  * @returns {Promise<Object>} The parsed JSON response.
@@ -3217,7 +3530,18 @@ async function handleChatSubmit(e) {
       maxTyped: 800,
     });
 
-    const data = await apiChat(payload);
+    // Streaming path: for stream-capable adapters, render tokens live (as
+    // markdown) over SSE. The server falls back to the queue (a `queued`
+    // event) when the model isn't ready, in which case we resume the normal
+    // poll path below. Non-streaming model types skip this entirely.
+    if (STREAMING_MODEL_TYPES.has(payload.model_type)) {
+      const handled = await runChatStream(payload, text, chatBotUI, userId);
+      if (handled) return;  // streamed (or errored) to completion
+      // handled === false => server queued the job; fall through to polling
+      // using the job_id it stashed on `payload.__queued`.
+    }
+
+    const data = payload.__queued || (await apiChat(payload));
     const job_id = data.job_id || CFG.JOB_ID_NONE;
     const queuedUserId = data.user_id || getUserId();
 
@@ -4483,6 +4807,24 @@ function init() {
     vllmOption.textContent = 'vLLM (streaming)';
     vllmOption.value = 'vllm';
     select.appendChild(vllmOption);
+
+    // DeepInfra streaming adapter — talks to DeepInfra's OpenAI-compatible
+    // /v1/openai/chat/completions endpoint with stream=true. See
+    // DeepInfraStreamingLLM in model_adapters.py for the SSE consumption
+    // logic. Unlike vLLM, DeepInfra is a public managed API (no Cloudflare
+    // wrapper), so it sidesteps the SSE-buffering issues vLLM hit.
+    const deepInfraStreamOption = document.createElement('option');
+    deepInfraStreamOption.textContent = 'DeepInfra (streaming)';
+    deepInfraStreamOption.value = 'deepinfra_stream';
+    select.appendChild(deepInfraStreamOption);
+
+    // Re-apply any persisted dev selection now that the dev-only options
+    // exist — the earlier reconciliation (init) ran before these were
+    // appended, so a cached 'vllm'/'sim'/'deepinfra_stream' wouldn't have
+    // visibly selected in the dropdown.
+    if (toolState.modelType) {
+      select.value = toolState.modelType;
+    }
   }
 }
 
