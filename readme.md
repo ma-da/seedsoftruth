@@ -294,6 +294,26 @@ These prompt designs reflect a research-tool stance: the system is intended to s
 
 Before deploying publicly, read [SECURITY.md](SECURITY.md) and address the gaps listed above.
 
+## Lessons learned so far
+
+The central lesson is that trustworthy AI does not come primarily from a smarter model. It comes from a disciplined system around the model: structured data, high-quality retrieval, source-grounded reasoning, validation, citation, careful prompting, and architecture that makes uncertainty and evidence visible.
+
+- Data normalization and careful structuring is essential. For truth-seeking or evidence-heavy AI, the model is often less important than chunking, metadata quality, citation handling, search ranking, deduplication, and context assembly. A mediocre model with excellent retrieval can outperform a stronger model with messy retrieval.
+- No model reliably retrieves a specific piece of training data on command. The model should not be trusted to remember or find facts internally. Search should retrieve evidence; the model should interpret, compare, summarize, and reason over that evidence.
+- Censorship is baked into most models on a few levels: training data selection, alignment engineering, RLHF (Reinforcement Learning from Human Feedback), and platform/interface controls.
+- Refusal ablation can remove alignment, but the loss of alignment/personality can destroy reasoning capabilities. This suggests that personality may play a crucial role in reasoning, perhaps providing a reasoning point of origin. Alignment, tone, values, caution, confidence, curiosity, and adversarial posture may not be superficial. They may influence what paths the model is willing or able to reason through. 
+- AI reasoning follows a path and prompts that aren't structured to harness this may return suboptimal results. The same model can produce very different results depending on whether it is asked to summarize, investigate, challenge, compare, extract, or reason step by step. Prompt structure is not cosmetic; it determines the reasoning mode.
+- It is possible to achieve virtually deterministic data transformation outputs by limiting the prompt to a single, well-defined task and employing rigorous output validation. A smaller model may fail at broad reasoning but perform well on narrow extraction, classification, formatting, validation, routing, summarization, or agent subroles.
+- Cloud infrastructure for running larger models is prohibitively expensive. This suggests local-first infrastructure has strategic value. Local or edge inference gives more control over privacy, cost, censorship resistance, experimentation, and long-term independence.
+- Metadata is intelligence. Dates, source names, authors, URLs, document type, topic tags, entities, credibility markers, and relationships between records are part of the system’s reasoning substrate.
+- Multi-agent systems may be more powerful than single-model systems for controversial or complex topics. A single model tends to collapse toward one answer. Multiple specialized agents can retrieve, argue, critique, verify, and synthesize, making the interaction between models part of the intelligence.
+- A RAG system can accidentally launder weak sources into authoritative answers. If bad, outdated, duplicated, or misleading sources enter the corpus, the AI may present them cleanly and confidently. Source quality controls matter.
+- The user interface is part of the intelligence system. Mode selection, citations, source previews, search controls, history depth, confidence indicators, and comparison views can strongly affect response relevance and accuracy.
+- Mode selection, citations, source previews, search controls, history depth, confidence indicators, and comparison views can strongly affect whether users understand and trust the output.
+- Evaluation needs to be built into the pipeline from the beginning. You need test questions, known-answer checks, retrieval recall tests, citation accuracy checks, hallucination audits, and regression tests after every model, dataset, or prompt change.
+- Training the same corpus on different base models can lead to surprising differences in model output.
+- Training a LORA can take much longer than expected in terms of setup time, actual machine learning time, and necessary iterations in order to get good model output
+
 ## Roadmap
 
 Near-term (path to v1.0):
